@@ -1,0 +1,30 @@
+{
+  "name": "hrms-spec-backend",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "seed": "node scripts/seed.js",
+    "seed:holidays": "node scripts/seedHolidays2026.js",
+    "seed:employees": "node scripts/seedEmployeesFromPdf.js",
+    "seed:leaves": "node scripts/seedLeavesFromFile.js",
+    "seed:attendance": "node scripts/seedAttendanceFromCsv.js",
+    "migrate:holidays": "node scripts/migrateHolidaysUnified.js",
+    "migrate:hrms": "node scripts/migrateHrmsToNewHrms.js",
+    "set:leaves": "node scripts/setLeavesFromSheet.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "cli-progress": "^3.12.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "express-validator": "^7.2.1",
+    "jsonwebtoken": "^9.0.2",
+    "mongoose": "^8.9.3",
+    "multer": "^1.4.5-lts.1",
+    "pdfkit": "^0.15.2"
+  }
+}

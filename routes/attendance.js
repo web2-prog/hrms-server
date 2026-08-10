@@ -1,0 +1,16 @@
+import { Router } from 'express';
+import * as ctrl from '../controllers/attendanceController.js';
+import { authenticate, authorize } from '../middleware/auth.js';
+
+const router = Router();
+router.use(authenticate);
+router.get('/me/today', authorize('admin', 'hr', 'employee'), ctrl.myToday);
+router.post('/me/check-in', authorize('admin', 'hr', 'employee'), ctrl.checkIn);
+router.post('/me/start-break', authorize('admin', 'hr', 'employee'), ctrl.startBreak);
+router.post('/me/end-break', authorize('admin', 'hr', 'employee'), ctrl.endBreak);
+router.post('/me/check-out', authorize('admin', 'hr', 'employee'), ctrl.checkOut);
+router.get('/', authorize('admin', 'hr', 'employee'), ctrl.list);
+router.put('/:id', authorize('admin', 'hr'), ctrl.update);
+router.post('/bulk/recalc', authorize('admin'), ctrl.bulkRecalc);
+router.post('/bulk/update', authorize('admin'), ctrl.bulkUpdate);
+export default router;
