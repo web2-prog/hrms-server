@@ -50,12 +50,22 @@ app.use((err, _req, res, _next) => {
 });
 
 const PORT = process.env.PORT || 5001;
+const isVercel = !!process.env.VERCEL;
 
+// Connect to MongoDB (mongoose caches the connection across warm serverless
+// invocations, so the first request may wait for the DB handshake).
 connectDB()
   .then(() => {
-    app.listen(PORT, () => console.log(`HRMS-Spec API on :${PORT}`));
+    if (isVercel) {
+      console.log('HRMS-Spec API ready (Vercel serverless)');
+    } else {
+      app.listen(PORT, () => console.log(`HRMS-Spec API on :${PORT}`));
+    }
   })
   .catch((e) => {
     console.error('DB connection failed', e);
-    process.exit(1);
+    if (!isVercel) process.exit(1);
   });
+
+// Export the app for Vercel (@vercel/node) — serverless entry point.
+export default app;
