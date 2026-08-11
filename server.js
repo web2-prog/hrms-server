@@ -23,7 +23,25 @@ dotenv.config();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 
-app.use(cors());
+/**
+ * CORS origins are driven by the CORS_ORIGINS env var (comma-separated list,
+ * e.g. CORS_ORIGINS=http://localhost:3003,https://client.example.com).
+ * If unset, falls back to allowing any origin.
+ *
+ * NOTE: in the cors package an array ['*'] does strict equality matching and
+ * blocks every real origin — '*' must be a plain string, which is why the
+ * fallback returns the string, not an array.
+ */
+function parseCorsOrigins(raw) {
+  if (!raw) return '*';
+  const origins = raw
+    .split(',')
+    .map((s) => s.trim().replace(/\/+$/, '')) // Origin headers never carry a trailing slash
+    .filter(Boolean);
+  return origins.length ? origins : '*';
+}
+
+app.use(cors({ origin: parseCorsOrigins(process.env.CORS_ORIGINS) }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
