@@ -22,25 +22,6 @@ import helpdeskRoutes from './routes/helpdesk.js';
 dotenv.config();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
-
-/**
- * CORS origins are driven by the CORS_ORIGINS env var (comma-separated list,
- * e.g. CORS_ORIGINS=http://localhost:3003,https://client.example.com).
- * If unset, falls back to allowing any origin.
- *
- * NOTE: in the cors package an array ['*'] does strict equality matching and
- * blocks every real origin — '*' must be a plain string, which is why the
- * fallback returns the string, not an array.
- */
-function parseCorsOrigins(raw) {
-  if (!raw) return '*';
-  const origins = raw
-    .split(',')
-    .map((s) => s.trim().replace(/\/+$/, '')) // Origin headers never carry a trailing slash
-    .filter(Boolean);
-  return origins.length ? origins : '*';
-}
-
 app.use(cors({ origin: '*' }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
@@ -80,16 +61,6 @@ if (!isVercel) {
     });
 }
 
-/**
- * Vercel serverless entry (@vercel/node).
- *
- * The DB connection is AWAITED before Express handles the request. Without
- * this, Mongoose buffers every model operation for 10s while the connection
- * is still establishing on a cold start — and if the connection never comes
- * up (missing MONGODB_URI, Atlas network allowlist, DNS), every request dies
- * with "Operation employees.findOne() buffering timed out after 10000ms".
- * Here an unreachable DB fails fast with a clear 503 instead.
- */
 export default async function handler(req, res) {
   try {
     await ensureDB();
