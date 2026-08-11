@@ -3,7 +3,7 @@ import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
-import { connectDB } from './config/db.js';
+import { ensureDB } from './config/db.js';
 
 import authRoutes from './routes/auth.js';
 import deptRoutes from './routes/departments.js';
@@ -52,20 +52,33 @@ app.use((err, _req, res, _next) => {
 const PORT = process.env.PORT || 5001;
 const isVercel = !!process.env.VERCEL;
 
-// Connect to MongoDB (mongoose caches the connection across warm serverless
-// invocations, so the first request may wait for the DB handshake).
-connectDB()
-  .then(() => {
-    if (isVercel) {
-      console.log('HRMS-Spec API ready (Vercel serverless)');
-    } else {
-      app.listen(PORT, () => console.log(`HRMS-Spec API on :${PORT}`));
-    }
-  })
-  .catch((e) => {
-    console.error('DB connection failed', e);
-    if (!isVercel) process.exit(1);
-  });
+if (!isVercel) {
+  // Local dev: connect once, then listen.
+  ensureDB()
+    .then(() => app.listen(PORT, () => console.log(`HRMS-Spec API on :${PORT}`)))
+    .catch((e) => {
+      console.error('DB connection failed', e);
+      process.exit(1);
+    });
+}
 
-// Export the app for Vercel (@vercel/node) — serverless entry point.
-export default app;
+/**
+ * Vercel serverless entry (@vercel/node).
+ *
+ * The DB connection is AWAITED before Express handles the request. Without
+ * this, Mongoose buffers every model operation for 10s while the connection
+ * is still establishing on a cold start — and if the connection never comes
+ * up (missing MONGODB_URI, Atlas network allowlist, DNS), every request dies
+ * with "Operation employees.findOne() buffering timed out after 10000ms".
+ * Here an unreachable DB fails fast with a clear 503 instead.
+ */
+export default async function handler(req, res) {
+  try {
+    await ensureDB();
+  } catch (e) {
+    console.error('DB connection failed', e);
+    res.status(503).json({ message: 'Database unavailable. Please try again.' });
+    return;
+  }
+  return app(req, res);
+}
