@@ -1,5 +1,6 @@
 import Attendance from '../models/Attendance.js';
 import Employee from '../models/Employee.js';
+import EarlyCheckoutRequest from '../models/EarlyCheckoutRequest.js';
 import {
   parseListQuery,
   listResponse,
@@ -28,7 +29,12 @@ export async function myToday(req, res) {
     const month = new Date().getMonth() + 1;
     const year = new Date().getFullYear();
     const summary = await recalculateMonthlySummary(req.user._id, month, year);
-    res.json({ attendance: rec, shift, monthly_summary: summary });
+    // Latest early-checkout request for today (if any) so the dashboard can show pending/decided state.
+    const early_checkout_request = await EarlyCheckoutRequest.findOne({
+      employee_id: req.user._id,
+      date: todayISO(),
+    }).sort({ createdAt: -1 });
+    res.json({ attendance: rec, shift, monthly_summary: summary, early_checkout_request });
   } catch (e) {
     res.status(500).json({ message: e.message });
   }
@@ -92,7 +98,158 @@ export async function checkOut(req, res) {
     Object.assign(rec, fields);
     await rec.save();
     await recalculateForDate(req.user._id, rec.date);
+    // A normal checkout supersedes any still-pending early checkout request for today.
+    await EarlyCheckoutRequest.updateMany(
+      { employee_id: req.user._id, date: rec.date, status: 'Pending' },
+      {
+        $set: {
+          status: 'Cancelled',
+          decided_by: req.user._id,
+          decision_note: 'Employee checked out normally',
+          decided_at: new Date(),
+        },
+      }
+    );
     res.json(rec);
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+}
+
+/* ── Early checkout request workflow ─────────────────────────────── */
+
+export async function createEarlyCheckoutRequest(req, res) {
+  try {
+    const rec = await getOrCreateToday(req.user._id);
+    if (!rec.check_in) return res.status(400).json({ message: 'Not checked in' });
+    if (rec.check_out) return res.status(400).json({ message: 'Already checked out' });
+    const existing = await EarlyCheckoutRequest.findOne({
+      employee_id: req.user._id,
+      date: todayISO(),
+      status: 'Pending',
+    });
+    if (existing) return res.status(400).json({ message: 'An early checkout request is already pending' });
+    const reason = String(req.body.reason || '').trim();
+    if (!reason) return res.status(400).json({ message: 'Reason is required' });
+    const request = await EarlyCheckoutRequest.create({
+      employee_id: req.user._id,
+      attendance_id: rec._id,
+      date: todayISO(),
+      requested_time: nowTime(),
+      reason,
+      status: 'Pending',
+    });
+    await AuditLog.create({
+      action: 'early_checkout_requested',
+      performed_by: req.user._id,
+      target_employee_id: req.user._id,
+      details: { date: request.date, requested_time: request.requested_time, reason },
+    });
+    res.status(201).json(request);
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+}
+
+export async function listEarlyCheckoutRequests(req, res) {
+  try {
+    const { page, limit, skip } = parseListQuery(req.query);
+    const filter = {};
+    if (req.user.role === 'employee') {
+      filter.employee_id = req.user._id;
+    } else {
+      if (req.query.status) filter.status = req.query.status;
+      if (req.query.date) filter.date = req.query.date;
+    }
+    const [data, total] = await Promise.all([
+      EarlyCheckoutRequest.find(filter)
+        .populate({ path: 'employee_id', populate: { path: 'department_id' } })
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit),
+      EarlyCheckoutRequest.countDocuments(filter),
+    ]);
+    res.json(listResponse(data, total, page, limit));
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+}
+
+export async function decideEarlyCheckoutRequest(req, res) {
+  try {
+    const request = await EarlyCheckoutRequest.findById(req.params.id);
+    if (!request) return res.status(404).json({ message: 'Request not found' });
+    if (request.status !== 'Pending') {
+      return res.status(400).json({ message: `Request already ${request.status.toLowerCase()}` });
+    }
+    const decision = req.body.status;
+    if (decision !== 'Approved' && decision !== 'Rejected') {
+      return res.status(400).json({ message: 'status must be Approved or Rejected' });
+    }
+    if (String(request.employee_id) === String(req.user._id)) {
+      return res.status(400).json({ message: 'You cannot decide your own early checkout request' });
+    }
+    request.status = decision;
+    request.decided_by = req.user._id;
+    request.decided_at = new Date();
+    request.decision_note = String(req.body.note || '').trim();
+
+    if (decision === 'Approved') {
+      const rec = await Attendance.findById(request.attendance_id);
+      if (rec && !rec.check_out) {
+        if (rec.break_started_at) {
+          const mins = minutesBetween(rec.break_started_at, request.requested_time);
+          rec.break_total = Number(((rec.break_total || 0) + Math.max(0, mins)).toFixed(4));
+          rec.break_started_at = null;
+        }
+        rec.check_out = request.requested_time;
+        const shift = await getEffectiveShiftForEmployee(rec.employee_id);
+        Object.assign(rec, recalculateAttendanceFields(rec, shift.working_hours_per_day));
+        await rec.save();
+        await recalculateForDate(rec.employee_id, rec.date);
+      }
+    }
+
+    await request.save();
+    await AuditLog.create({
+      action: `early_checkout_${decision === 'Approved' ? 'approved' : 'rejected'}`,
+      performed_by: req.user._id,
+      target_employee_id: request.employee_id,
+      details: {
+        date: request.date,
+        requested_time: request.requested_time,
+        note: request.decision_note,
+      },
+    });
+    res.json(request);
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+}
+
+export async function cancelEarlyCheckoutRequest(req, res) {
+  try {
+    const request = await EarlyCheckoutRequest.findById(req.params.id);
+    if (!request) return res.status(404).json({ message: 'Request not found' });
+    if (request.status !== 'Pending') {
+      return res.status(400).json({ message: `Request already ${request.status.toLowerCase()}` });
+    }
+    // Employees can only cancel their own requests.
+    if (String(request.employee_id) !== String(req.user._id)) {
+      return res.status(403).json({ message: 'Forbidden' });
+    }
+    request.status = 'Cancelled';
+    request.decided_by = req.user._id;
+    request.decided_at = new Date();
+    request.decision_note = 'Cancelled by employee';
+    await request.save();
+    await AuditLog.create({
+      action: 'early_checkout_cancelled',
+      performed_by: req.user._id,
+      target_employee_id: req.user._id,
+      details: { date: request.date, requested_time: request.requested_time },
+    });
+    res.json(request);
   } catch (e) {
     res.status(500).json({ message: e.message });
   }

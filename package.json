@@ -6,6 +6,7 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
+    "build": "node scripts/build.js",
     "seed": "node scripts/seed.js",
     "seed:holidays": "node scripts/seedHolidays2026.js",
     "seed:employees": "node scripts/seedEmployeesFromPdf.js",
