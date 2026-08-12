@@ -1,7 +1,7 @@
 import OvertimeRequest from '../models/OvertimeRequest.js';
 import Attendance from '../models/Attendance.js';
-import Employee from '../models/Employee.js';
 import { parseListQuery, listResponse } from '../utils/helpers.js';
+import { applyEmployeeListScope } from '../utils/employeeScope.js';
 import { recalculateMonthlySummary } from '../services/monthlyHours.js';
 
 function monthDateFilter(month, year) {
@@ -10,18 +10,6 @@ function monthDateFilter(month, year) {
   const y = parseInt(year, 10);
   const mm = String(m).padStart(2, '0');
   return { $regex: `^${y}-${mm}` };
-}
-
-async function employeeSearchIds(search) {
-  if (!search) return null;
-  const emps = await Employee.find({
-    $or: [
-      { name: { $regex: search, $options: 'i' } },
-      { email: { $regex: search, $options: 'i' } },
-      { employee_id: { $regex: search, $options: 'i' } },
-    ],
-  }).select('_id');
-  return emps.map((e) => e._id);
 }
 
 function mapRequestRow(doc) {
@@ -58,16 +46,7 @@ export async function list(req, res) {
     const dateRegex = monthDateFilter(req.query.month, req.query.year);
 
     const empFilter = {};
-    if (req.query.employee_id) empFilter.employee_id = req.query.employee_id;
-    if (req.user.role === 'employee') empFilter.employee_id = req.user._id;
-    if (req.query.department_id) {
-      const emps = await Employee.find({ department_id: req.query.department_id }).select('_id');
-      empFilter.employee_id = { $in: emps.map((e) => e._id) };
-    }
-    if (search) {
-      const ids = await employeeSearchIds(search);
-      empFilter.employee_id = { $in: ids };
-    }
+    await applyEmployeeListScope(req, empFilter, { search });
 
     const includeRequests = source === 'all' || source === 'requests' || source === 'request';
     const includeAttendance =

@@ -18,14 +18,17 @@ import miscRoutes from './routes/misc.js';
 import analyticsRoutes from './routes/analytics.js';
 import policyRoutes from './routes/policies.js';
 import helpdeskRoutes from './routes/helpdesk.js';
+import uploadRoutes from './routes/uploads.js';
+import { corsOptions, assertJwtSecret } from './middleware/security.js';
 
 dotenv.config();
+assertJwtSecret();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
-app.use(cors({ origin: '*' }));
+app.use(cors(corsOptions()));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+app.use('/uploads', uploadRoutes);
 
 app.get('/health', (_req, res) => res.json({ ok: true, db: process.env.MONGODB_DB_NAME }));
 
