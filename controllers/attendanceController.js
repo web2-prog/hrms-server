@@ -25,6 +25,14 @@ async function getOrCreateToday(employeeId) {
 export async function myToday(req, res) {
   try {
     const rec = await getOrCreateToday(req.user._id);
+    // Keep live status consistent with break flag
+    if (rec.check_in && !rec.check_out && rec.break_started_at && rec.status !== 'OnBreak') {
+      rec.status = 'OnBreak';
+      await rec.save();
+    } else if (rec.check_in && !rec.check_out && !rec.break_started_at && rec.status === 'OnBreak') {
+      rec.status = 'Working';
+      await rec.save();
+    }
     const shift = await getEffectiveShiftForEmployee(req.user._id);
     const month = new Date().getMonth() + 1;
     const year = new Date().getFullYear();
@@ -260,7 +268,21 @@ export async function list(req, res) {
     const { page, limit, skip, search } = parseListQuery(req.query);
     const filter = {};
     if (req.query.employee_id) filter.employee_id = req.query.employee_id;
-    if (req.query.status) filter.status = req.query.status;
+    if (req.query.status === 'OnBreak') {
+      // Include stale Working rows that still have an open break
+      filter.$or = [
+        { status: 'OnBreak' },
+        { break_started_at: { $nin: [null, ''] } },
+      ];
+      filter.check_out = null;
+    } else if (req.query.status === 'Working') {
+      filter.status = 'Working';
+      filter.$and = [
+        { $or: [{ break_started_at: null }, { break_started_at: '' }, { break_started_at: { $exists: false } }] },
+      ];
+    } else if (req.query.status) {
+      filter.status = req.query.status;
+    }
     if (req.query.month && req.query.year) {
       const m = String(req.query.month).padStart(2, '0');
       filter.date = { $regex: `^${req.query.year}-${m}` };
@@ -288,10 +310,18 @@ export async function list(req, res) {
         : { $in: employeeIds };
     }
 
-    const [data, total] = await Promise.all([
+    const [raw, total] = await Promise.all([
       Attendance.find(filter).populate({ path: 'employee_id', populate: { path: 'department_id' } }).sort({ date: -1 }).skip(skip).limit(limit),
       Attendance.countDocuments(filter),
     ]);
+    // Ensure live break shows as OnBreak even if status field is stale
+    const data = raw.map((doc) => {
+      const o = doc.toObject();
+      if (o.check_in && !o.check_out && o.break_started_at) {
+        o.status = 'OnBreak';
+      }
+      return o;
+    });
     res.json(listResponse(data, total, page, limit));
   } catch (e) {
     res.status(500).json({ message: e.message });
