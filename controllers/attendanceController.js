@@ -307,12 +307,39 @@ export async function list(req, res) {
     } else if (req.query.year) {
       filter.date = { $regex: `^${req.query.year}` };
     }
-    await applyEmployeeListScope(req, filter, { search });
+    if (req.query.department_id) {
+      const emps = await Employee.find({ department_id: req.query.department_id }).select('_id');
+      filter.employee_id = { $in: emps.map((e) => e._id) };
+    }
+    if (req.user.role === 'employee') filter.employee_id = req.user._id;
+
+    let employeeIds = null;
+    if (search) {
+      const emps = await Employee.find({
+        $or: [
+          { name: { $regex: search, $options: 'i' } },
+          { email: { $regex: search, $options: 'i' } },
+          { employee_id: { $regex: search, $options: 'i' } },
+        ],
+      }).select('_id');
+      employeeIds = emps.map((e) => e._id);
+      filter.employee_id = filter.employee_id
+        ? { $in: [].concat(filter.employee_id.$in || filter.employee_id).filter((id) => employeeIds.some((e) => String(e) === String(id))) }
+        : { $in: employeeIds };
+    }
 
     const [data, total] = await Promise.all([
       Attendance.find(filter).populate({ path: 'employee_id', populate: { path: 'department_id' } }).sort({ date: -1 }).skip(skip).limit(limit),
       Attendance.countDocuments(filter),
     ]);
+    // Ensure live break shows as OnBreak even if status field is stale
+    const data = raw.map((doc) => {
+      const o = doc.toObject();
+      if (o.check_in && !o.check_out && o.break_started_at) {
+        o.status = 'OnBreak';
+      }
+      return o;
+    });
     res.json(listResponse(data, total, page, limit));
   } catch (e) {
     res.status(500).json({ message: e.message });
