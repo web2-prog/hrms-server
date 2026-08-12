@@ -1,6 +1,6 @@
 import Leave from '../models/Leave.js';
-import Employee from '../models/Employee.js';
 import { parseListQuery, listResponse } from '../utils/helpers.js';
+import { applyEmployeeListScope } from '../utils/employeeScope.js';
 import { recalculateMonthlySummary } from '../services/monthlyHours.js';
 import { datesInRange } from '../utils/helpers.js';
 
@@ -14,7 +14,6 @@ export async function list(req, res) {
     } else if (req.query.day_type) {
       filter.day_type = req.query.day_type;
     }
-    if (req.query.employee_id) filter.employee_id = req.query.employee_id;
     if (req.query.month && req.query.year) {
       const m = Math.max(1, Math.min(12, parseInt(req.query.month, 10) || 1));
       const y = parseInt(req.query.year, 10);
@@ -50,17 +49,7 @@ export async function list(req, res) {
       filter.$and = [...(filter.$and || []), ...whenClauses];
     }
 
-    if (req.user.role === 'employee') filter.employee_id = req.user._id;
-    if (req.query.department_id) {
-      const emps = await Employee.find({ department_id: req.query.department_id }).select('_id');
-      filter.employee_id = { $in: emps.map((e) => e._id) };
-    }
-    if (search) {
-      const emps = await Employee.find({
-        $or: [{ name: { $regex: search, $options: 'i' } }, { email: { $regex: search, $options: 'i' } }],
-      }).select('_id');
-      filter.employee_id = { $in: emps.map((e) => e._id) };
-    }
+    await applyEmployeeListScope(req, filter, { search });
 
     const sort =
       when === 'upcoming' || when === 'future'

@@ -13,6 +13,8 @@ router.post('/me/early-checkout-request', authorize('admin', 'hr', 'employee'), 
 router.post('/me/early-checkout-request/:id/cancel', authorize('admin', 'hr', 'employee'), ctrl.cancelEarlyCheckoutRequest);
 router.get('/early-checkout-requests', authorize('admin', 'hr', 'employee'), ctrl.listEarlyCheckoutRequests);
 router.post('/early-checkout-requests/:id/decide', authorize('admin', 'hr'), ctrl.decideEarlyCheckoutRequest);
+router.get('/today', authorize('admin', 'hr'), ctrl.listToday);
+router.put('/today/:employeeId', authorize('admin', 'hr'), ctrl.updateToday);
 router.get('/', authorize('admin', 'hr', 'employee'), ctrl.list);
 router.put('/:id', authorize('admin', 'hr'), ctrl.update);
 router.post('/bulk/recalc', authorize('admin'), ctrl.bulkRecalc);

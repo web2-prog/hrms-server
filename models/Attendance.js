@@ -12,6 +12,8 @@ const attendanceSchema = new mongoose.Schema(
     working_hours: { type: Number, default: 0 }, // decimal hours (second precision)
     status: { type: String, enum: ['Extra', 'Low', 'OnTime', 'Working', 'OnBreak', 'Absent'], default: 'Absent', index: true },
     surplus_shortfall: { type: Number, default: 0 }, // decimal hours (+ extra, - shortfall)
+    /** When true, late check-in penalty minutes are waived for this day */
+    penalty_waived: { type: Boolean, default: false },
   },
   { timestamps: true }
 );

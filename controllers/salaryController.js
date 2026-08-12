@@ -4,6 +4,7 @@ import AuditLog from '../models/AuditLog.js';
 import { calculateSalaryDraft, SALARY_COMPANIES } from '../services/salaryCalc.js';
 import { buildPayslipForm } from '../services/payslipForm.js';
 import { parseListQuery, listResponse } from '../utils/helpers.js';
+import { applyEmployeeListScope } from '../utils/employeeScope.js';
 import { renderSalarySlipPdf } from '../services/salarySlipPdf.js';
 
 const MONTH_NAMES = [
@@ -32,24 +33,13 @@ export async function list(req, res) {
   try {
     const { page, limit, skip, search } = parseListQuery(req.query);
     const filter = {};
-    if (req.query.employee_id) filter.employee_id = req.query.employee_id;
     if (req.query.month) filter.month = Number(req.query.month);
     if (req.query.year) filter.year = Number(req.query.year);
     if (req.query.payment_status) filter.payment_status = req.query.payment_status;
     if (req.query.company_key === 'ondial' || req.query.company_key === 'kriraai') {
       filter.company_key = req.query.company_key;
     }
-    if (req.user.role === 'employee') filter.employee_id = req.user._id;
-    if (req.query.department_id) {
-      const emps = await Employee.find({ department_id: req.query.department_id }).select('_id');
-      filter.employee_id = { $in: emps.map((e) => e._id) };
-    }
-    if (search) {
-      const emps = await Employee.find({
-        $or: [{ name: { $regex: search, $options: 'i' } }, { email: { $regex: search, $options: 'i' } }],
-      }).select('_id');
-      filter.employee_id = { $in: emps.map((e) => e._id) };
-    }
+    await applyEmployeeListScope(req, filter, { search });
     const [data, total] = await Promise.all([
       SalarySlip.find(filter)
         .populate({ path: 'employee_id', populate: { path: 'department_id' } })
