@@ -1,9 +1,16 @@
 import Attendance from '../models/Attendance.js';
 import Employee from '../models/Employee.js';
 import EarlyCheckoutRequest from '../models/EarlyCheckoutRequest.js';
-import { parseListQuery, listResponse, todayISO, nowTime, minutesBetween, normalizeTime, parseBreakMinutes, effectiveWorkStart, lateCheckInPenalty, LATE_CHECKIN_PENALTY_MINUTES } from '../utils/helpers.js';
-import { applyEmployeeListScope } from '../utils/employeeScope.js';
-import { getEffectiveShiftForEmployee, resolveEffectiveShift } from '../services/shift.js';
+import {
+  parseListQuery,
+  listResponse,
+  todayISO,
+  nowTime,
+  minutesBetween,
+  normalizeTime,
+  parseBreakMinutes,
+} from '../utils/helpers.js';
+import { getEffectiveShiftForEmployee } from '../services/shift.js';
 import { recalculateAttendanceFields } from '../services/attendanceCalc.js';
 import { recalculateForDate, recalculateMonthlySummary } from '../services/monthlyHours.js';
 import AuditLog from '../models/AuditLog.js';
@@ -300,6 +307,7 @@ export async function list(req, res) {
   try {
     const { page, limit, skip, search } = parseListQuery(req.query);
     const filter = {};
+    if (req.query.employee_id) filter.employee_id = req.query.employee_id;
     if (req.query.status) filter.status = req.query.status;
     if (req.query.month && req.query.year) {
       const m = String(req.query.month).padStart(2, '0');
@@ -309,10 +317,18 @@ export async function list(req, res) {
     }
     await applyEmployeeListScope(req, filter, { search });
 
-    const [data, total] = await Promise.all([
+    const [raw, total] = await Promise.all([
       Attendance.find(filter).populate({ path: 'employee_id', populate: { path: 'department_id' } }).sort({ date: -1 }).skip(skip).limit(limit),
       Attendance.countDocuments(filter),
     ]);
+    // Ensure live break shows as OnBreak even if status field is stale
+    const data = raw.map((doc) => {
+      const o = doc.toObject();
+      if (o.check_in && !o.check_out && o.break_started_at) {
+        o.status = 'OnBreak';
+      }
+      return o;
+    });
     res.json(listResponse(data, total, page, limit));
   } catch (e) {
     res.status(500).json({ message: e.message });
