@@ -1,10 +1,18 @@
-import { minutesBetween, timeToDecimal } from '../utils/helpers.js';
+import { minutesBetween, timeToDecimal, effectiveWorkStart } from '../utils/helpers.js';
 import { computeDailyStatus } from './shift.js';
 
-export function recalculateAttendanceFields(record, threshold) {
+/**
+ * Recalculate day fields.
+ * @param record attendance-like object (check_in/out, break_total, break_started_at, penalty_waived)
+ * @param threshold daily working_hours_per_day
+ * @param shiftStart department/employee shift start (HH:MM[:SS]) — used for late +15m work start
+ */
+export function recalculateAttendanceFields(record, threshold, shiftStart = null) {
   let breakMinutes = Number(record.break_total || 0);
+  const workStart = effectiveWorkStart(record.check_in, shiftStart, !!record.penalty_waived);
+
   if (record.check_in && record.check_out) {
-    const totalMin = minutesBetween(record.check_in, record.check_out);
+    const totalMin = Math.max(0, minutesBetween(workStart, record.check_out));
     const workMin = Math.max(0, totalMin - breakMinutes);
     const working_hours = workMin / 60;
     const { status, surplus_shortfall } = computeDailyStatus(working_hours, threshold);
@@ -19,4 +27,4 @@ export function recalculateAttendanceFields(record, threshold) {
   return { working_hours: 0, status: 'Absent', surplus_shortfall: 0, break_total: breakMinutes };
 }
 
-export { timeToDecimal };
+export { timeToDecimal, effectiveWorkStart };

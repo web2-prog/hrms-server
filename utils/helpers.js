@@ -56,6 +56,49 @@ export function minutesBetween(start, end) {
   return secondsBetween(start, end) / 60;
 }
 
+/** Add fractional minutes to HH:MM / HH:MM:SS → HH:MM:SS */
+export function addMinutesToTime(t, mins) {
+  const p = parseTimeParts(t);
+  if (!p) return t;
+  let total = Math.round(p.h * 3600 + p.m * 60 + p.s + Number(mins || 0) * 60);
+  if (total < 0) total = 0;
+  const h = Math.floor(total / 3600) % 24;
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+}
+
+/** Fixed late check-in penalty (minutes). Work counted from check_in + this when late. */
+export const LATE_CHECKIN_PENALTY_MINUTES = 15;
+
+export function isLateCheckIn(checkIn, shiftStart) {
+  if (!checkIn || !shiftStart) return false;
+  return minutesBetween(shiftStart, checkIn) > 1 / 60; // > ~1 second
+}
+
+/**
+ * Work clock start: if late (and not waived), count from check_in + 15 minutes.
+ */
+export function effectiveWorkStart(checkIn, shiftStart, penaltyWaived = false) {
+  if (!checkIn) return null;
+  if (!penaltyWaived && isLateCheckIn(checkIn, shiftStart)) {
+    return addMinutesToTime(checkIn, LATE_CHECKIN_PENALTY_MINUTES);
+  }
+  return normalizeTime(checkIn) || checkIn;
+}
+
+export function lateCheckInPenalty(checkIn, shiftStart, penaltyWaived = false) {
+  if (!isLateCheckIn(checkIn, shiftStart)) {
+    return { late: false, late_minutes: 0, penalty_minutes: 0 };
+  }
+  const late_minutes = Math.round(minutesBetween(shiftStart, checkIn) * 100) / 100;
+  return {
+    late: true,
+    late_minutes,
+    penalty_minutes: penaltyWaived ? 0 : LATE_CHECKIN_PENALTY_MINUTES,
+  };
+}
+
 export function todayISO(d = new Date()) {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, '0');
