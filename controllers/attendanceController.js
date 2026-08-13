@@ -328,12 +328,12 @@ export async function list(req, res) {
         : { $in: employeeIds };
     }
 
-    const [data, total] = await Promise.all([
+    const [docs, total] = await Promise.all([
       Attendance.find(filter).populate({ path: 'employee_id', populate: { path: 'department_id' } }).sort({ date: -1 }).skip(skip).limit(limit),
       Attendance.countDocuments(filter),
     ]);
     // Ensure live break shows as OnBreak even if status field is stale
-    const data = raw.map((doc) => {
+    const data = docs.map((doc) => {
       const o = doc.toObject();
       if (o.check_in && !o.check_out && o.break_started_at) {
         o.status = 'OnBreak';
