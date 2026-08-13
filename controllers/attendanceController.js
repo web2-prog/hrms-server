@@ -6,6 +6,7 @@ import { applyEmployeeListScope } from '../utils/employeeScope.js';
 import { getEffectiveShiftForEmployee, resolveEffectiveShift } from '../services/shift.js';
 import { recalculateAttendanceFields } from '../services/attendanceCalc.js';
 import { recalculateForDate, recalculateMonthlySummary } from '../services/monthlyHours.js';
+import { closeStaleOpenSessions, isAtOrAfterAutoCheckout } from '../services/autoCheckout.js';
 import AuditLog from '../models/AuditLog.js';
 
 function liveBreakMinutes(rec, now) {
@@ -44,6 +45,7 @@ async function getOrCreateToday(employeeId) {
 
 export async function myToday(req, res) {
   try {
+    await closeStaleOpenSessions({ employeeId: req.user._id });
     const rec = await getOrCreateToday(req.user._id);
     // Keep live status consistent with break flag
     if (rec.check_in && !rec.check_out && rec.break_started_at && rec.status !== 'OnBreak') {
@@ -83,10 +85,15 @@ export async function myToday(req, res) {
 
 export async function checkIn(req, res) {
   try {
+    await closeStaleOpenSessions({ employeeId: req.user._id });
+    if (isAtOrAfterAutoCheckout()) {
+      return res.status(400).json({ message: 'Check-in is closed for today after 11:55 PM auto-checkout' });
+    }
     const rec = await getOrCreateToday(req.user._id);
     if (rec.check_in) return res.status(400).json({ message: 'Already checked in' });
     rec.check_in = nowTime();
     rec.status = 'Working';
+    rec.auto_checkout = false;
     await rec.save();
     res.json(rec);
   } catch (e) {
@@ -96,6 +103,7 @@ export async function checkIn(req, res) {
 
 export async function startBreak(req, res) {
   try {
+    await closeStaleOpenSessions({ employeeId: req.user._id });
     const rec = await getOrCreateToday(req.user._id);
     if (!rec.check_in || rec.check_out) return res.status(400).json({ message: 'Not working' });
     if (rec.break_started_at) return res.status(400).json({ message: 'Break already started' });
@@ -110,6 +118,7 @@ export async function startBreak(req, res) {
 
 export async function endBreak(req, res) {
   try {
+    await closeStaleOpenSessions({ employeeId: req.user._id });
     const rec = await getOrCreateToday(req.user._id);
     if (!rec.break_started_at) return res.status(400).json({ message: 'No active break' });
     const mins = minutesBetween(rec.break_started_at, nowTime());
@@ -125,15 +134,20 @@ export async function endBreak(req, res) {
 
 export async function checkOut(req, res) {
   try {
+    await closeStaleOpenSessions({ employeeId: req.user._id });
     const rec = await getOrCreateToday(req.user._id);
     if (!rec.check_in) return res.status(400).json({ message: 'Not checked in' });
-    if (rec.check_out) return res.status(400).json({ message: 'Already checked out' });
+    if (rec.check_out) {
+      if (rec.auto_checkout) return res.json(rec);
+      return res.status(400).json({ message: 'Already checked out' });
+    }
     if (rec.break_started_at) {
       const mins = minutesBetween(rec.break_started_at, nowTime());
       rec.break_total = Number(((rec.break_total || 0) + Math.max(0, mins)).toFixed(4));
       rec.break_started_at = null;
     }
     rec.check_out = nowTime();
+    rec.auto_checkout = false;
     const shift = await getEffectiveShiftForEmployee(req.user._id);
     const fields = recalculateAttendanceFields(rec, shift.working_hours_per_day, shift.shift_start);
     Object.assign(rec, fields);
@@ -161,6 +175,7 @@ export async function checkOut(req, res) {
 
 export async function createEarlyCheckoutRequest(req, res) {
   try {
+    await closeStaleOpenSessions({ employeeId: req.user._id });
     const rec = await getOrCreateToday(req.user._id);
     if (!rec.check_in) return res.status(400).json({ message: 'Not checked in' });
     if (rec.check_out) return res.status(400).json({ message: 'Already checked out' });
@@ -307,26 +322,7 @@ export async function list(req, res) {
     } else if (req.query.year) {
       filter.date = { $regex: `^${req.query.year}` };
     }
-    if (req.query.department_id) {
-      const emps = await Employee.find({ department_id: req.query.department_id }).select('_id');
-      filter.employee_id = { $in: emps.map((e) => e._id) };
-    }
-    if (req.user.role === 'employee') filter.employee_id = req.user._id;
-
-    let employeeIds = null;
-    if (search) {
-      const emps = await Employee.find({
-        $or: [
-          { name: { $regex: search, $options: 'i' } },
-          { email: { $regex: search, $options: 'i' } },
-          { employee_id: { $regex: search, $options: 'i' } },
-        ],
-      }).select('_id');
-      employeeIds = emps.map((e) => e._id);
-      filter.employee_id = filter.employee_id
-        ? { $in: [].concat(filter.employee_id.$in || filter.employee_id).filter((id) => employeeIds.some((e) => String(e) === String(id))) }
-        : { $in: employeeIds };
-    }
+    await applyEmployeeListScope(req, filter, { search });
 
     const [docs, total] = await Promise.all([
       Attendance.find(filter).populate({ path: 'employee_id', populate: { path: 'department_id' } }).sort({ date: -1 }).skip(skip).limit(limit),
@@ -352,7 +348,10 @@ export async function update(req, res) {
     if (!rec) return res.status(404).json({ message: 'Not found' });
     const { check_in, check_out, break_total, break_started_at, penalty_waived, end_break } = req.body;
     if (check_in !== undefined) rec.check_in = normalizeTime(check_in);
-    if (check_out !== undefined) rec.check_out = normalizeTime(check_out);
+    if (check_out !== undefined) {
+      rec.check_out = normalizeTime(check_out);
+      rec.auto_checkout = false;
+    }
     if (break_total !== undefined) rec.break_total = Number(parseBreakMinutes(break_total).toFixed(4));
     if (penalty_waived !== undefined) rec.penalty_waived = !!penalty_waived;
     if (end_break) {
@@ -380,6 +379,7 @@ export async function listToday(req, res) {
   try {
     const { page, limit, skip, search } = parseListQuery(req.query);
     const date = req.query.date || todayISO();
+    await closeStaleOpenSessions();
     const empFilter = { status: 'active', role: 'employee' };
     if (req.query.department_id) empFilter.department_id = req.query.department_id;
     if (search) {
@@ -425,6 +425,7 @@ export async function listToday(req, res) {
         attendance_id: att?._id || null,
         check_in: att?.check_in || null,
         check_out: att?.check_out || null,
+        auto_checkout: !!att?.auto_checkout,
         work_start,
         break_total: att?.break_total || 0,
         break_started_at: att?.break_started_at || null,
@@ -483,7 +484,10 @@ export async function updateToday(req, res) {
     const { check_in, check_out, break_total, break_started_at, penalty_waived, end_break } = req.body;
 
     if (check_in !== undefined) rec.check_in = check_in === null || check_in === '' ? null : normalizeTime(check_in);
-    if (check_out !== undefined) rec.check_out = check_out === null || check_out === '' ? null : normalizeTime(check_out);
+    if (check_out !== undefined) {
+      rec.check_out = check_out === null || check_out === '' ? null : normalizeTime(check_out);
+      rec.auto_checkout = false;
+    }
     if (break_total !== undefined) rec.break_total = Number(parseBreakMinutes(break_total).toFixed(4));
     if (penalty_waived !== undefined) rec.penalty_waived = !!penalty_waived;
 
@@ -504,6 +508,7 @@ export async function updateToday(req, res) {
       rec.working_hours = 0;
       rec.surplus_shortfall = 0;
       rec.status = 'Absent';
+      rec.auto_checkout = false;
     } else {
       const shift = await getEffectiveShiftForEmployee(employeeId);
       Object.assign(rec, recalculateAttendanceFields(rec, shift.working_hours_per_day, shift.shift_start));
@@ -581,7 +586,10 @@ export async function bulkUpdate(req, res) {
       const rec = await Attendance.findById(u.id);
       if (!rec) continue;
       if (u.check_in !== undefined) rec.check_in = normalizeTime(u.check_in);
-      if (u.check_out !== undefined) rec.check_out = normalizeTime(u.check_out);
+      if (u.check_out !== undefined) {
+        rec.check_out = normalizeTime(u.check_out);
+        rec.auto_checkout = false;
+      }
       if (u.break_total !== undefined) rec.break_total = Number(parseBreakMinutes(u.break_total).toFixed(4));
       const shift = await getEffectiveShiftForEmployee(rec.employee_id);
       Object.assign(rec, recalculateAttendanceFields(rec, shift.working_hours_per_day, shift.shift_start));

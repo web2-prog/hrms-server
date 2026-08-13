@@ -11,5 +11,11 @@
       "src": "/(.*)",
       "dest": "server.js"
     }
+  ],
+  "crons": [
+    {
+      "path": "/api/jobs/auto-checkout",
+      "schedule": "25 18 * * *"
+    }
   ]
 }
