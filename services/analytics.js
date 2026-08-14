@@ -2,7 +2,7 @@ import Attendance from '../models/Attendance.js';
 import OvertimeRequest from '../models/OvertimeRequest.js';
 import Employee from '../models/Employee.js';
 import { resolveEffectiveShift } from '../services/shift.js';
-import { minutesBetween } from '../utils/helpers.js';
+import { minutesBetween, LATE_CHECKIN_PENALTY_MINUTES } from '../utils/helpers.js';
 
 const MONTH_NAMES = [
   'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
@@ -83,7 +83,7 @@ export async function buildYearAnalytics({ year, department_id, employee_id }) {
       employee_id: { $in: empIds },
       date: { $regex: `^${year}` },
     })
-      .select('employee_id date check_in check_out working_hours status surplus_shortfall')
+      .select('employee_id date check_in check_out working_hours status surplus_shortfall penalty_waived')
       .lean(),
     OvertimeRequest.find({
       employee_id: { $in: empIds },
@@ -143,14 +143,19 @@ export async function buildYearAnalytics({ year, department_id, employee_id }) {
 
     if (row.check_in && shift.shift_start) {
       const lateMins = minutesBetween(shift.shift_start, row.check_in);
-      if (lateMins > 0) {
+      if (lateMins > 1 / 60) {
         bucket.late_checkin_count += 1;
         bucket.late_checkin_minutes += lateMins;
-        bucket.penalty_minutes += lateMins;
+        // Fixed 15-minute late check-in penalty (unless waived)
+        if (!row.penalty_waived) {
+          bucket.penalty_minutes += LATE_CHECKIN_PENALTY_MINUTES;
+        }
         if (empRow) {
           empRow.late_checkin_count += 1;
           empRow.late_checkin_minutes += lateMins;
-          empRow.penalty_minutes += lateMins;
+          if (!row.penalty_waived) {
+            empRow.penalty_minutes += LATE_CHECKIN_PENALTY_MINUTES;
+          }
         }
       }
     }

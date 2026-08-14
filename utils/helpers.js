@@ -14,12 +14,28 @@ export function listResponse(data, total, page, limit) {
   return { data, total, page, limit, pages: Math.ceil(total / limit) || 0 };
 }
 
-/** Parse "HH:MM" or "HH:MM:SS" → { h, m, s } */
+/** Parse "HH:MM", "HH:MM:SS", or 12h "h:mm[:ss] AM/PM" → { h, m, s } */
 export function parseTimeParts(t) {
   if (!t || typeof t !== 'string') return null;
-  const parts = t.trim().split(':').map(Number);
+  const str = t.trim();
+  const ampm = str.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM)$/i);
+  if (ampm) {
+    let h = Number(ampm[1]);
+    const m = Number(ampm[2]);
+    const s = ampm[3] != null ? Number(ampm[3]) : 0;
+    const period = ampm[4].toUpperCase();
+    if (h < 1 || h > 12 || m > 59 || s > 59) return null;
+    if (period === 'AM') {
+      if (h === 12) h = 0;
+    } else if (h !== 12) {
+      h += 12;
+    }
+    return { h, m, s };
+  }
+  const parts = str.split(':').map(Number);
   if (parts.length < 2 || parts.some((n) => Number.isNaN(n))) return null;
   const [h, m, s = 0] = parts;
+  if (h > 23 || m > 59 || s > 59) return null;
   return { h, m, s };
 }
 
@@ -54,6 +70,56 @@ export function secondsBetween(start, end) {
 /** Fractional minutes between two times (second precision) */
 export function minutesBetween(start, end) {
   return secondsBetween(start, end) / 60;
+}
+
+/** Earlier of two clock times (HH:MM[:SS]); missing values are ignored */
+export function earlierClock(a, b) {
+  if (!a) return b || null;
+  if (!b) return a;
+  return timeToSeconds(a) <= timeToSeconds(b) ? a : b;
+}
+
+/** Add fractional minutes to HH:MM / HH:MM:SS → HH:MM:SS */
+export function addMinutesToTime(t, mins) {
+  const p = parseTimeParts(t);
+  if (!p) return t;
+  let total = Math.round(p.h * 3600 + p.m * 60 + p.s + Number(mins || 0) * 60);
+  if (total < 0) total = 0;
+  const h = Math.floor(total / 3600) % 24;
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+}
+
+/** Fixed late check-in penalty (minutes). Work counted from check_in + this when late. */
+export const LATE_CHECKIN_PENALTY_MINUTES = 15;
+
+export function isLateCheckIn(checkIn, shiftStart) {
+  if (!checkIn || !shiftStart) return false;
+  return minutesBetween(shiftStart, checkIn) > 1 / 60; // > ~1 second
+}
+
+/**
+ * Work clock start: if late (and not waived), count from check_in + 15 minutes.
+ */
+export function effectiveWorkStart(checkIn, shiftStart, penaltyWaived = false) {
+  if (!checkIn) return null;
+  if (!penaltyWaived && isLateCheckIn(checkIn, shiftStart)) {
+    return addMinutesToTime(checkIn, LATE_CHECKIN_PENALTY_MINUTES);
+  }
+  return normalizeTime(checkIn) || checkIn;
+}
+
+export function lateCheckInPenalty(checkIn, shiftStart, penaltyWaived = false) {
+  if (!isLateCheckIn(checkIn, shiftStart)) {
+    return { late: false, late_minutes: 0, penalty_minutes: 0 };
+  }
+  const late_minutes = Math.round(minutesBetween(shiftStart, checkIn) * 100) / 100;
+  return {
+    late: true,
+    late_minutes,
+    penalty_minutes: penaltyWaived ? 0 : LATE_CHECKIN_PENALTY_MINUTES,
+  };
 }
 
 export function todayISO(d = new Date()) {
