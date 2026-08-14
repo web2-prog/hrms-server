@@ -72,13 +72,6 @@ export function minutesBetween(start, end) {
   return secondsBetween(start, end) / 60;
 }
 
-/** Earlier of two clock times (HH:MM[:SS]); missing values are ignored */
-export function earlierClock(a, b) {
-  if (!a) return b || null;
-  if (!b) return a;
-  return timeToSeconds(a) <= timeToSeconds(b) ? a : b;
-}
-
 /** Add fractional minutes to HH:MM / HH:MM:SS → HH:MM:SS */
 export function addMinutesToTime(t, mins) {
   const p = parseTimeParts(t);

@@ -149,7 +149,7 @@ export async function checkOut(req, res) {
     rec.check_out = nowTime();
     rec.auto_checkout = false;
     const shift = await getEffectiveShiftForEmployee(req.user._id);
-    const fields = recalculateAttendanceFields(rec, shift.working_hours_per_day, shift.shift_start, shift.shift_end);
+    const fields = recalculateAttendanceFields(rec, shift.working_hours_per_day, shift.shift_start);
     Object.assign(rec, fields);
     await rec.save();
     await recalculateForDate(req.user._id, rec.date);
@@ -260,7 +260,7 @@ export async function decideEarlyCheckoutRequest(req, res) {
         }
         rec.check_out = request.requested_time;
         const shift = await getEffectiveShiftForEmployee(rec.employee_id);
-        Object.assign(rec, recalculateAttendanceFields(rec, shift.working_hours_per_day, shift.shift_start, shift.shift_end));
+        Object.assign(rec, recalculateAttendanceFields(rec, shift.working_hours_per_day, shift.shift_start));
         await rec.save();
         await recalculateForDate(rec.employee_id, rec.date);
       }
@@ -324,10 +324,18 @@ export async function list(req, res) {
     }
     await applyEmployeeListScope(req, filter, { search });
 
-    const [data, total] = await Promise.all([
+    const [docs, total] = await Promise.all([
       Attendance.find(filter).populate({ path: 'employee_id', populate: { path: 'department_id' } }).sort({ date: -1 }).skip(skip).limit(limit),
       Attendance.countDocuments(filter),
     ]);
+    // Ensure live break shows as OnBreak even if status field is stale
+    const data = docs.map((doc) => {
+      const o = doc.toObject();
+      if (o.check_in && !o.check_out && o.break_started_at) {
+        o.status = 'OnBreak';
+      }
+      return o;
+    });
     res.json(listResponse(data, total, page, limit));
   } catch (e) {
     res.status(500).json({ message: e.message });
@@ -356,7 +364,7 @@ export async function update(req, res) {
       rec.break_started_at = break_started_at ? normalizeTime(break_started_at) : null;
     }
     const shift = await getEffectiveShiftForEmployee(rec.employee_id);
-    const fields = recalculateAttendanceFields(rec, shift.working_hours_per_day, shift.shift_start, shift.shift_end);
+    const fields = recalculateAttendanceFields(rec, shift.working_hours_per_day, shift.shift_start);
     Object.assign(rec, fields);
     await rec.save();
     await recalculateForDate(rec.employee_id, rec.date);
@@ -503,7 +511,7 @@ export async function updateToday(req, res) {
       rec.auto_checkout = false;
     } else {
       const shift = await getEffectiveShiftForEmployee(employeeId);
-      Object.assign(rec, recalculateAttendanceFields(rec, shift.working_hours_per_day, shift.shift_start, shift.shift_end));
+      Object.assign(rec, recalculateAttendanceFields(rec, shift.working_hours_per_day, shift.shift_start));
     }
 
     await rec.save();
@@ -584,7 +592,7 @@ export async function bulkUpdate(req, res) {
       }
       if (u.break_total !== undefined) rec.break_total = Number(parseBreakMinutes(u.break_total).toFixed(4));
       const shift = await getEffectiveShiftForEmployee(rec.employee_id);
-      Object.assign(rec, recalculateAttendanceFields(rec, shift.working_hours_per_day, shift.shift_start, shift.shift_end));
+      Object.assign(rec, recalculateAttendanceFields(rec, shift.working_hours_per_day, shift.shift_start));
       await rec.save();
       await recalculateForDate(rec.employee_id, rec.date);
       results.push(rec);

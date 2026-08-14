@@ -1,6 +1,6 @@
 import Attendance from '../models/Attendance.js';
 import EarlyCheckoutRequest from '../models/EarlyCheckoutRequest.js';
-import { todayISO, nowTime, minutesBetween, timeToSeconds, earlierClock } from '../utils/helpers.js';
+import { todayISO, nowTime, minutesBetween, timeToSeconds } from '../utils/helpers.js';
 import { getEffectiveShiftForEmployee } from './shift.js';
 import { recalculateAttendanceFields } from './attendanceCalc.js';
 import { recalculateForDate } from './monthlyHours.js';
@@ -29,27 +29,17 @@ function isDueForAutoCheckout(rec, today, now) {
 
 async function applyAutoCheckout(rec) {
   const checkoutTime = checkoutTimeForRecord(rec);
-  const shift = await getEffectiveShiftForEmployee(rec.employee_id);
-  const shiftEnd = shift?.shift_end;
   if (rec.break_started_at) {
-    // Break after shift end is not payable time — don't add it to today's break total.
-    let breakEnd = checkoutTime;
-    if (shiftEnd) {
-      if (timeToSeconds(rec.break_started_at) >= timeToSeconds(shiftEnd)) {
-        breakEnd = rec.break_started_at;
-      } else {
-        breakEnd = earlierClock(checkoutTime, shiftEnd);
-      }
-    }
-    const mins = minutesBetween(rec.break_started_at, breakEnd);
+    const mins = minutesBetween(rec.break_started_at, checkoutTime);
     rec.break_total = Number(((rec.break_total || 0) + Math.max(0, mins)).toFixed(4));
     rec.break_started_at = null;
   }
   rec.check_out = checkoutTime;
   rec.auto_checkout = true;
+  const shift = await getEffectiveShiftForEmployee(rec.employee_id);
   Object.assign(
     rec,
-    recalculateAttendanceFields(rec, shift?.working_hours_per_day ?? 8.25, shift?.shift_start, shiftEnd)
+    recalculateAttendanceFields(rec, shift?.working_hours_per_day ?? 8.25, shift?.shift_start)
   );
   await rec.save();
   await recalculateForDate(rec.employee_id, rec.date);
