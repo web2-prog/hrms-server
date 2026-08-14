@@ -316,6 +316,12 @@ export async function list(req, res) {
     const { page, limit, skip, search } = parseListQuery(req.query);
     const filter = {};
     if (req.query.status) filter.status = req.query.status;
+    // Auto-checkout days (forgotten open session closed at 11:55 PM) do not earn
+    // attendance OT — same rule as monthlyHours / the Overtime page. Allow the
+    // UI to count status Extra days that actually carry OT.
+    if (req.query.exclude_auto_checkout === '1' || req.query.exclude_auto_checkout === 'true') {
+      filter.auto_checkout = { $ne: true };
+    }
     if (req.query.month && req.query.year) {
       const m = String(req.query.month).padStart(2, '0');
       filter.date = { $regex: `^${req.query.year}-${m}` };

@@ -1,4 +1,5 @@
 import Employee from '../models/Employee.js';
+import AuditLog from '../models/AuditLog.js';
 import { parseListQuery, listResponse, nextEmployeeId } from '../utils/helpers.js';
 import { clearEmployeeData } from '../services/clearData.js';
 import {
@@ -145,6 +146,32 @@ export async function update(req, res) {
     json.bonds = ensureBondsArray(json);
     json.current_salary = resolveCurrentSalary(json);
     res.json(json);
+  } catch (e) {
+    res.status(400).json({ message: e.message });
+  }
+}
+
+/**
+ * Admin/HR sets a new password for an employee (no current password needed).
+ * The pre-save hook re-hashes it with bcrypt.
+ */
+export async function resetPassword(req, res) {
+  try {
+    const emp = await Employee.findById(req.params.id).select('+password');
+    if (!emp) return res.status(404).json({ message: 'Not found' });
+    const { new_password } = req.body;
+    if (!new_password || String(new_password).length < 6) {
+      return res.status(400).json({ message: 'New password must be at least 6 characters' });
+    }
+    emp.password = String(new_password);
+    await emp.save();
+    await AuditLog.create({
+      action: 'password_reset',
+      performed_by: req.user._id,
+      target_employee_id: emp._id,
+      details: { reset_by_role: req.user.role, email: emp.email },
+    });
+    res.json({ message: 'Password updated' });
   } catch (e) {
     res.status(400).json({ message: e.message });
   }

@@ -30,7 +30,17 @@ export async function getNonWorkingDateSet(year, month = null) {
     if (isSunday(iso)) set.add(iso);
   }
 
-  const holidays = await Holiday.find({ year }).lean();
+  // Single-day holidays are year-scoped, but a vacation can span a year
+  // boundary (e.g. Dec 28 → Jan 4). Match vacations by range overlap with the
+  // requested period so each year sees its own share of the days.
+  const startISO = todayISO(start);
+  const endISO = todayISO(end);
+  const holidays = await Holiday.find({
+    $or: [
+      { type: 'Vacation', start_date: { $lte: endISO }, end_date: { $gte: startISO } },
+      { type: { $ne: 'Vacation' }, year },
+    ],
+  }).lean();
   for (const h of holidays) {
     if (h.type === 'Vacation') {
       for (const d of datesInRange(h.start_date, h.end_date)) {
@@ -56,8 +66,14 @@ export async function getWorkingDaysOfYear(year) {
   const nonWorking = await getNonWorkingDateSet(year);
 
   // Vacation days: every calendar day of the range that falls inside this year.
+  // Match by overlap so a vacation spanning into the next (or from the previous)
+  // year contributes its days to each year it touches.
   const vacationDates = new Set();
-  const vacations = await Holiday.find({ year, type: 'Vacation' }).lean();
+  const vacations = await Holiday.find({
+    type: 'Vacation',
+    start_date: { $lte: `${year}-12-31` },
+    end_date: { $gte: `${year}-01-01` },
+  }).lean();
   for (const v of vacations) {
     for (const d of datesInRange(v.start_date, v.end_date)) {
       if (inYear(d, year)) vacationDates.add(d);
