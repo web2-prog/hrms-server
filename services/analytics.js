@@ -83,7 +83,7 @@ export async function buildYearAnalytics({ year, department_id, employee_id }) {
       employee_id: { $in: empIds },
       date: { $regex: `^${year}` },
     })
-      .select('employee_id date check_in check_out working_hours status surplus_shortfall penalty_waived')
+      .select('employee_id date check_in check_out working_hours status surplus_shortfall penalty_waived auto_checkout')
       .lean(),
     OvertimeRequest.find({
       employee_id: { $in: empIds },
@@ -100,6 +100,8 @@ export async function buildYearAnalytics({ year, department_id, employee_id }) {
       name: emp.name,
       code: emp.employee_id,
       department: emp.department_id?.name || '—',
+      department_id: emp.department_id?._id || null,
+      attendance_days: 0,
       total_working_hours: 0,
       early_checkout_minutes: 0,
       early_checkout_count: 0,
@@ -127,7 +129,10 @@ export async function buildYearAnalytics({ year, department_id, employee_id }) {
 
     const worked = Number(row.working_hours || 0);
     bucket.total_working_hours = round2(bucket.total_working_hours + worked);
-    if (empRow) empRow.total_working_hours = round2(empRow.total_working_hours + worked);
+    if (empRow) {
+      empRow.total_working_hours = round2(empRow.total_working_hours + worked);
+      empRow.attendance_days += 1;
+    }
 
     if (row.check_out && shift.shift_end) {
       const earlyMins = minutesBetween(row.check_out, shift.shift_end);
@@ -171,7 +176,10 @@ export async function buildYearAnalytics({ year, department_id, employee_id }) {
       }
     }
 
-    if (row.status === 'Extra' || shortfall > 0) {
+    // Auto-checkout days (session left open until 11:55 PM) do not earn OT —
+    // same rule as monthlyHours.js and the Overtime page. Exclude them here so
+    // the Analytics totals match the Performance/Overtime numbers.
+    if ((row.status === 'Extra' || shortfall > 0) && !row.auto_checkout) {
       const otH = shortfall > 0 ? shortfall : 0;
       bucket.attendance_ot_hours = round2(bucket.attendance_ot_hours + otH);
       bucket.overtime_general_hours = round2(bucket.overtime_general_hours + otH);
@@ -235,5 +243,45 @@ export async function buildYearAnalytics({ year, department_id, employee_id }) {
     totals: sumMonths(months),
     employee_count: employees.length,
     by_employee,
+  };
+}
+
+/**
+ * Per-department attendance aggregates for a calendar year, grouped from the
+ * same per-employee metrics as buildYearAnalytics (consistent numbers).
+ * Only active employee-role members are counted.
+ */
+export async function buildDepartmentAnalytics({ year }) {
+  const org = await buildYearAnalytics({ year });
+  const deptMap = new Map();
+
+  for (const e of org.by_employee) {
+    const key = e.department_id ? String(e.department_id) : null;
+    if (!key) continue;
+    let d = deptMap.get(key);
+    if (!d) {
+      d = {
+        department_id: key,
+        department: e.department,
+        employee_count: 0,
+        attendance_days: 0,
+        total_working_hours: 0,
+        late_checkin_count: 0,
+        early_checkout_count: 0,
+        penalty_minutes: 0,
+      };
+      deptMap.set(key, d);
+    }
+    d.employee_count += 1;
+    d.attendance_days += e.attendance_days;
+    d.total_working_hours = round2(d.total_working_hours + e.total_working_hours);
+    d.late_checkin_count += e.late_checkin_count;
+    d.early_checkout_count += e.early_checkout_count;
+    d.penalty_minutes += e.penalty_minutes;
+  }
+
+  return {
+    year: Number(org.year),
+    departments: [...deptMap.values()].sort((a, b) => a.department.localeCompare(b.department)),
   };
 }

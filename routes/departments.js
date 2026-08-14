@@ -5,6 +5,7 @@ import { authenticate, authorize } from '../middleware/auth.js';
 const router = Router();
 router.use(authenticate);
 router.get('/', authorize('admin', 'hr', 'employee'), ctrl.list);
+router.get('/analytics', authorize('admin', 'hr'), ctrl.analytics);
 router.get('/:id', authorize('admin', 'hr'), ctrl.getOne);
 router.post('/', authorize('admin', 'hr'), ctrl.create);
 router.put('/:id', authorize('admin', 'hr'), ctrl.update);

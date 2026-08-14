@@ -6,15 +6,24 @@ function isSunday(dateStr) {
 }
 
 function inMonth(dateStr, year, month) {
-  if (!month) return true;
   return dateStr.startsWith(`${year}-${String(month).padStart(2, '0')}`);
 }
 
+function inYear(dateStr, year) {
+  return dateStr.startsWith(`${year}-`);
+}
+
+/**
+ * Set of non-working dates for a year (or a month within it): every Sunday plus
+ * all holiday dates. Dates are always clamped to the requested period, so a
+ * vacation spanning into the next year never leaks into this one.
+ */
 export async function getNonWorkingDateSet(year, month = null) {
   const set = new Set();
 
   const start = month ? new Date(year, month - 1, 1) : new Date(year, 0, 1);
   const end = month ? new Date(year, month, 0) : new Date(year, 11, 31);
+  const inPeriod = (d) => (month ? inMonth(d, year, month) : inYear(d, year));
 
   for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
     const iso = todayISO(d);
@@ -25,31 +34,62 @@ export async function getNonWorkingDateSet(year, month = null) {
   for (const h of holidays) {
     if (h.type === 'Vacation') {
       for (const d of datesInRange(h.start_date, h.end_date)) {
-        if (inMonth(d, year, month)) set.add(d);
+        if (inPeriod(d)) set.add(d);
       }
       continue;
     }
-    if (h.date && inMonth(h.date, year, month)) set.add(h.date);
+    if (h.date && inPeriod(h.date)) set.add(h.date);
   }
 
   return set;
 }
 
+/**
+ * Year calendar summary. The breakdown is non-overlapping — every off day is
+ * counted exactly once (vacation absorbs any weekend days inside it, and a
+ * festival/manual day wins over a Saturday/Sunday), so the category counts
+ * always add up to non_working_days and working + non-working = total.
+ */
 export async function getWorkingDaysOfYear(year) {
   const isLeap = (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
   const totalDays = isLeap ? 366 : 365;
   const nonWorking = await getNonWorkingDateSet(year);
-  const sundays = [...nonWorking].filter(isSunday).length;
 
-  const [sats, festivals, manuals, vacations] = await Promise.all([
-    Holiday.countDocuments({ year, type: 'Saturday' }),
-    Holiday.countDocuments({ year, type: 'Festival' }),
-    Holiday.countDocuments({ year, type: 'Manual' }),
-    Holiday.find({ year, type: 'Vacation' }).lean(),
-  ]);
+  // Vacation days: every calendar day of the range that falls inside this year.
+  const vacationDates = new Set();
+  const vacations = await Holiday.find({ year, type: 'Vacation' }).lean();
+  for (const v of vacations) {
+    for (const d of datesInRange(v.start_date, v.end_date)) {
+      if (inYear(d, year)) vacationDates.add(d);
+    }
+  }
 
-  let vacationDays = 0;
-  for (const v of vacations) vacationDays += datesInRange(v.start_date, v.end_date).length;
+  // Non-vacation holiday dates; a Festival/Manual wins over a Saturday on the
+  // same date so each day maps to a single bucket.
+  const holidayDates = new Map();
+  const singleDays = await Holiday.find({ year, type: { $in: ['Festival', 'Manual', 'Saturday'] } }).lean();
+  for (const h of singleDays) {
+    if (!h.date) continue;
+    const existing = holidayDates.get(h.date);
+    if (!existing || existing === 'Saturday') holidayDates.set(h.date, h.type);
+  }
+
+  const breakdown = {
+    sundays: 0,
+    alternate_saturdays: 0,
+    festivals: 0,
+    manual_holidays: 0,
+    vacation_days: vacationDates.size,
+  };
+
+  for (const date of nonWorking) {
+    if (vacationDates.has(date)) continue;
+    const type = holidayDates.get(date);
+    if (type === 'Festival') breakdown.festivals += 1;
+    else if (type === 'Manual') breakdown.manual_holidays += 1;
+    else if (type === 'Saturday') breakdown.alternate_saturdays += 1;
+    else if (isSunday(date)) breakdown.sundays += 1;
+  }
 
   return {
     year,
@@ -57,12 +97,8 @@ export async function getWorkingDaysOfYear(year) {
     non_working_days: nonWorking.size,
     working_days: totalDays - nonWorking.size,
     breakdown: {
-      sundays,
-      alternate_saturdays: sats,
-      festivals,
-      manual_holidays: manuals,
-      vacation_days: vacationDays,
-      note: 'Overlaps counted once via date union',
+      ...breakdown,
+      note: 'Non-overlapping: each off day counted once; vacations absorb weekend days inside them',
     },
   };
 }

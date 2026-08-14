@@ -63,6 +63,12 @@ async function computeLopDays(employeeId, month, year) {
     to_date: { $gte: monthStart },
   }).lean();
 
+  // Only working days are paid, so only they can be deducted as LOP.
+  // Weekends/holidays inside an unpaid leave must not be charged (they are
+  // non-working days the employee is not paid for anyway).
+  const { working_dates } = await getWorkingDaysInMonth(year, month);
+  const workingSet = new Set(working_dates);
+
   let lop = 0;
   for (const lv of leaves) {
     const reason = String(lv.reason || '');
@@ -71,7 +77,7 @@ async function computeLopDays(employeeId, month, year) {
     if (!isUnpaid) continue;
     const isHalf = /half/i.test(reason) || /half/i.test(dayType);
     for (const d of datesInRange(lv.from_date, lv.to_date)) {
-      if (!d.startsWith(monthPrefix)) continue;
+      if (!workingSet.has(d)) continue; // month-scoped + working day only
       lop += isHalf ? 0.5 : 1;
     }
   }
@@ -79,27 +85,35 @@ async function computeLopDays(employeeId, month, year) {
 }
 
 /**
- * Total early-checkout minutes in month (check_out before effective shift_end).
+ * Early-checkout stats for the month:
+ * - minutes: every minute checked out before shift end (the early-checkout line)
+ * - shortfall_hours: the portion of those early departures that already lowered the
+ *   month's counted hours (days where actual < daily threshold). The monthly
+ *   shortfall already contains these hours, so they must not be deducted twice.
  */
-async function computeEarlyCheckoutMinutes(employeeId, month, year) {
+async function computeEarlyCheckoutStats(employeeId, month, year) {
   const monthPrefix = `${year}-${String(month).padStart(2, '0')}`;
   const shift = await getEffectiveShiftForEmployee(employeeId);
   const shiftEnd = shift?.shift_end || '17:30';
+  const threshold = shift?.working_hours_per_day ?? 8.25;
 
   const rows = await Attendance.find({
     employee_id: employeeId,
     date: { $regex: `^${monthPrefix}` },
     check_out: { $ne: null },
   })
-    .select('check_out')
+    .select('check_out working_hours')
     .lean();
 
   let mins = 0;
+  let shortfallHours = 0;
   for (const row of rows) {
     const early = minutesBetween(row.check_out, shiftEnd);
     if (early > 0) mins += early;
+    const actual = Number(row.working_hours) || 0;
+    if (row.check_out && actual < threshold) shortfallHours += threshold - actual;
   }
-  return round2(mins);
+  return { minutes: round2(mins), shortfall_hours: round2(shortfallHours) };
 }
 
 export async function calculateSalaryDraft(employeeId, month, year, options = {}) {
@@ -129,7 +143,8 @@ export async function calculateSalaryDraft(employeeId, month, year, options = {}
   const { working_days } = await getWorkingDaysInMonth(year, month);
   const lop_days = await computeLopDays(employeeId, month, year);
   const paid_days = Math.max(0, round2(working_days - lop_days));
-  const early_checkout_minutes = await computeEarlyCheckoutMinutes(employeeId, month, year);
+  const early_checkout_stats = await computeEarlyCheckoutStats(employeeId, month, year);
+  const early_checkout_minutes = early_checkout_stats.minutes;
 
   // Per-day rate for unpaid leave; per-hour rate for early checkout (same multiplier family as shortfall)
   const daily_rate = working_days > 0 ? base / working_days : 0;
@@ -137,8 +152,12 @@ export async function calculateSalaryDraft(employeeId, month, year, options = {}
   const early_checkout_hours = early_checkout_minutes / 60;
   const early_checkout_deduction_amount = early_checkout_hours * deduction_rate;
 
-  // Shortfall hours deduction (Performance → Salary Deduction)
-  const deduction_amount = shortfall * deduction_rate;
+  // Shortfall hours deduction (Performance → Salary Deduction). The monthly
+  // shortfall already includes the hours lost to early checkout, so exclude
+  // those here — they are charged on the early-checkout line above. Each
+  // unworked hour is deducted exactly once.
+  const shortfall_deductible = Math.max(0, round2(shortfall - early_checkout_stats.shortfall_hours));
+  const deduction_amount = shortfall_deductible * deduction_rate;
   const overtime_amount = overtime * overtime_rate;
 
   // Bond proof: salary_deduction (default 15%) held from monthly base while proof is Held
@@ -167,7 +186,7 @@ export async function calculateSalaryDraft(employeeId, month, year, options = {}
     monthly_target_hours: target,
     monthly_counted_hours: counted,
     overtime_hours: overtime,
-    shortfall_hours: shortfall,
+    shortfall_hours: shortfall_deductible,
     shortfall_action: shortfallAction || undefined,
     needs_shortfall_decision: needsShortfallDecision,
     pending_hours: round2(rawShortfall),
