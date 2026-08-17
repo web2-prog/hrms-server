@@ -75,8 +75,10 @@ export async function recalculateMonthlySummary(employeeId, month, year) {
   let attendance_ot_hours = 0;
   let low_hours_from_checkout = 0;
   for (const r of records) {
-    if (r.auto_checkout && r.check_in && r.check_out) {
-      const fields = recalculateAttendanceFields(r, threshold, shift.shift_start, shift.shift_end);
+    // Recompute completed days with the current department policy. This keeps
+    // manual checkouts, auto-checkouts, and the bulk-recalculate action aligned.
+    if (r.check_in && r.check_out) {
+      const fields = recalculateAttendanceFields(r, threshold, shift.shift_start, shift.late_buffer_minutes);
       const changed =
         Number(r.working_hours || 0) !== fields.working_hours ||
         Number(r.surplus_shortfall || 0) !== fields.surplus_shortfall ||

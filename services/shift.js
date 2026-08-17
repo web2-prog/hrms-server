@@ -1,5 +1,6 @@
 import Employee from '../models/Employee.js';
 import Department from '../models/Department.js';
+import { DEFAULT_LATE_BUFFER_MINUTES, normalizeLateBufferMinutes } from '../utils/helpers.js';
 
 export function resolveEffectiveShift(employee, department) {
   const dept = department || employee.department_id;
@@ -16,6 +17,7 @@ export function resolveEffectiveShift(employee, department) {
       useCustom && employee.custom_working_hours_per_day != null
         ? employee.custom_working_hours_per_day
         : dept?.working_hours_per_day ?? 8.25,
+    late_buffer_minutes: normalizeLateBufferMinutes(dept?.late_buffer_minutes ?? DEFAULT_LATE_BUFFER_MINUTES),
     has_custom: !!useCustom,
   };
 }

@@ -39,7 +39,12 @@ async function applyAutoCheckout(rec) {
   const shift = await getEffectiveShiftForEmployee(rec.employee_id);
   Object.assign(
     rec,
-    recalculateAttendanceFields(rec, shift?.working_hours_per_day ?? 8.25, shift?.shift_start)
+    recalculateAttendanceFields(
+      rec,
+      shift?.working_hours_per_day ?? 8.25,
+      shift?.shift_start,
+      shift?.late_buffer_minutes
+    )
   );
   await rec.save();
   await recalculateForDate(rec.employee_id, rec.date);

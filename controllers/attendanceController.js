@@ -17,21 +17,21 @@ function liveBreakMinutes(rec, now) {
   return breakMins;
 }
 
-function liveWorkMinutes(rec, now, shiftStart) {
+function liveWorkMinutes(rec, now, shiftStart, lateBufferMinutes) {
   if (!rec.check_in) return 0;
-  const start = effectiveWorkStart(rec.check_in, shiftStart, !!rec.penalty_waived);
+  const start = effectiveWorkStart(rec.check_in, shiftStart, !!rec.penalty_waived, lateBufferMinutes);
   const end = rec.check_out || now;
   const span = Math.max(0, minutesBetween(start, end));
   return Math.max(0, span - liveBreakMinutes(rec, now));
 }
 
-function computeLiveStatus(rec, threshold, now, shiftStart) {
+function computeLiveStatus(rec, threshold, now, shiftStart, lateBufferMinutes) {
   if (!rec?.check_in) return 'Absent';
   if (rec.check_out) {
     return rec.status || 'OnTime';
   }
   if (rec.break_started_at || rec.status === 'OnBreak') return 'OnBreak';
-  const workHours = liveWorkMinutes(rec, now, shiftStart) / 60;
+  const workHours = liveWorkMinutes(rec, now, shiftStart, lateBufferMinutes) / 60;
   if (workHours > Number(threshold || 8.25) + 1 / 120) return 'OnOvertime';
   return 'Working';
 }
@@ -63,9 +63,9 @@ export async function myToday(req, res) {
       employee_id: req.user._id,
       date: todayISO(),
     }).sort({ createdAt: -1 });
-    const penalty = lateCheckInPenalty(rec.check_in, shift?.shift_start, !!rec.penalty_waived);
+    const penalty = lateCheckInPenalty(rec.check_in, shift?.shift_start, !!rec.penalty_waived, shift?.late_buffer_minutes);
     const work_start = rec.check_in
-      ? effectiveWorkStart(rec.check_in, shift?.shift_start, !!rec.penalty_waived)
+      ? effectiveWorkStart(rec.check_in, shift?.shift_start, !!rec.penalty_waived, shift?.late_buffer_minutes)
       : null;
     res.json({
       attendance: rec,
@@ -76,6 +76,7 @@ export async function myToday(req, res) {
       late_minutes: penalty.late_minutes,
       penalty_minutes: penalty.penalty_minutes,
       late_penalty_rule_minutes: LATE_CHECKIN_PENALTY_MINUTES,
+      late_buffer_minutes: shift?.late_buffer_minutes,
       date: rec.date,
       now: nowTime(),
       timezone: APP_TIMEZONE,
@@ -151,7 +152,7 @@ export async function checkOut(req, res) {
     rec.check_out = nowTime();
     rec.auto_checkout = false;
     const shift = await getEffectiveShiftForEmployee(req.user._id);
-    const fields = recalculateAttendanceFields(rec, shift.working_hours_per_day, shift.shift_start);
+    const fields = recalculateAttendanceFields(rec, shift.working_hours_per_day, shift.shift_start, shift.late_buffer_minutes);
     Object.assign(rec, fields);
     await rec.save();
     await recalculateForDate(req.user._id, rec.date);
@@ -262,7 +263,7 @@ export async function decideEarlyCheckoutRequest(req, res) {
         }
         rec.check_out = request.requested_time;
         const shift = await getEffectiveShiftForEmployee(rec.employee_id);
-        Object.assign(rec, recalculateAttendanceFields(rec, shift.working_hours_per_day, shift.shift_start));
+        Object.assign(rec, recalculateAttendanceFields(rec, shift.working_hours_per_day, shift.shift_start, shift.late_buffer_minutes));
         await rec.save();
         await recalculateForDate(rec.employee_id, rec.date);
       }
@@ -372,7 +373,7 @@ export async function update(req, res) {
       rec.break_started_at = break_started_at ? normalizeTime(break_started_at) : null;
     }
     const shift = await getEffectiveShiftForEmployee(rec.employee_id);
-    const fields = recalculateAttendanceFields(rec, shift.working_hours_per_day, shift.shift_start);
+    const fields = recalculateAttendanceFields(rec, shift.working_hours_per_day, shift.shift_start, shift.late_buffer_minutes);
     Object.assign(rec, fields);
     await rec.save();
     await recalculateForDate(rec.employee_id, rec.date);
@@ -412,12 +413,12 @@ export async function listToday(req, res) {
       const att = attByEmp.get(String(emp._id)) || null;
       const shift = resolveEffectiveShift(emp, emp.department_id);
       const threshold = shift.working_hours_per_day ?? 8.25;
-      const live_status = computeLiveStatus(att, threshold, now, shift.shift_start);
-      const workMins = att ? liveWorkMinutes(att, now, shift.shift_start) : 0;
+      const live_status = computeLiveStatus(att, threshold, now, shift.shift_start, shift.late_buffer_minutes);
+      const workMins = att ? liveWorkMinutes(att, now, shift.shift_start, shift.late_buffer_minutes) : 0;
       const breakMins = att ? liveBreakMinutes(att, now) : 0;
-      const penalty = lateCheckInPenalty(att?.check_in, shift.shift_start, !!att?.penalty_waived);
+      const penalty = lateCheckInPenalty(att?.check_in, shift.shift_start, !!att?.penalty_waived, shift.late_buffer_minutes);
       const work_start = att?.check_in
-        ? effectiveWorkStart(att.check_in, shift.shift_start, !!att.penalty_waived)
+        ? effectiveWorkStart(att.check_in, shift.shift_start, !!att.penalty_waived, shift.late_buffer_minutes)
         : null;
       return {
         employee: {
@@ -447,10 +448,12 @@ export async function listToday(req, res) {
         late_minutes: penalty.late_minutes,
         penalty_minutes: penalty.penalty_minutes,
         late_penalty_rule_minutes: LATE_CHECKIN_PENALTY_MINUTES,
+        late_buffer_minutes: shift.late_buffer_minutes,
         shift: {
           shift_start: shift.shift_start,
           shift_end: shift.shift_end,
           working_hours_per_day: threshold,
+          late_buffer_minutes: shift.late_buffer_minutes,
         },
       };
     });
@@ -519,7 +522,7 @@ export async function updateToday(req, res) {
       rec.auto_checkout = false;
     } else {
       const shift = await getEffectiveShiftForEmployee(employeeId);
-      Object.assign(rec, recalculateAttendanceFields(rec, shift.working_hours_per_day, shift.shift_start));
+      Object.assign(rec, recalculateAttendanceFields(rec, shift.working_hours_per_day, shift.shift_start, shift.late_buffer_minutes));
     }
 
     await rec.save();
@@ -540,21 +543,23 @@ export async function updateToday(req, res) {
 
     const shift = await getEffectiveShiftForEmployee(employeeId);
     const now = nowTime();
-    const live_status = computeLiveStatus(rec.toObject(), shift.working_hours_per_day, now, shift.shift_start);
-    const penalty = lateCheckInPenalty(rec.check_in, shift.shift_start, !!rec.penalty_waived);
+    const live_status = computeLiveStatus(rec.toObject(), shift.working_hours_per_day, now, shift.shift_start, shift.late_buffer_minutes);
+    const penalty = lateCheckInPenalty(rec.check_in, shift.shift_start, !!rec.penalty_waived, shift.late_buffer_minutes);
     res.json({
       ...rec.toObject(),
       live_status,
       work_start: rec.check_in
-        ? effectiveWorkStart(rec.check_in, shift.shift_start, !!rec.penalty_waived)
+        ? effectiveWorkStart(rec.check_in, shift.shift_start, !!rec.penalty_waived, shift.late_buffer_minutes)
         : null,
       late_minutes: penalty.late_minutes,
       penalty_minutes: penalty.penalty_minutes,
       late_penalty_rule_minutes: LATE_CHECKIN_PENALTY_MINUTES,
+      late_buffer_minutes: shift.late_buffer_minutes,
       shift: {
         shift_start: shift.shift_start,
         shift_end: shift.shift_end,
         working_hours_per_day: shift.working_hours_per_day,
+        late_buffer_minutes: shift.late_buffer_minutes,
       },
     });
   } catch (e) {
@@ -600,7 +605,7 @@ export async function bulkUpdate(req, res) {
       }
       if (u.break_total !== undefined) rec.break_total = Number(parseBreakMinutes(u.break_total).toFixed(4));
       const shift = await getEffectiveShiftForEmployee(rec.employee_id);
-      Object.assign(rec, recalculateAttendanceFields(rec, shift.working_hours_per_day, shift.shift_start));
+      Object.assign(rec, recalculateAttendanceFields(rec, shift.working_hours_per_day, shift.shift_start, shift.late_buffer_minutes));
       await rec.save();
       await recalculateForDate(rec.employee_id, rec.date);
       results.push(rec);

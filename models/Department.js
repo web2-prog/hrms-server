@@ -6,6 +6,18 @@ const departmentSchema = new mongoose.Schema(
     working_hours_per_day: { type: Number, required: true }, // hours as decimal e.g. 8.25
     shift_start: { type: String, required: true }, // "09:30"
     shift_end: { type: String, required: true },
+    // Grace period after shift start. The cutoff minute is inclusive:
+    // 09:00 + 5 minutes permits check-in through 09:05:59; 09:06 starts the penalty.
+    late_buffer_minutes: {
+      type: Number,
+      default: 5,
+      min: 0,
+      max: 240,
+      validate: {
+        validator: Number.isInteger,
+        message: 'Late buffer must be a whole number of minutes',
+      },
+    },
     status: { type: String, enum: ['active', 'inactive'], default: 'active', index: true },
   },
   { timestamps: true }
