@@ -43,8 +43,109 @@ function formatPayDate(month, year) {
   return `${String(last).padStart(2, '0')}/${String(month).padStart(2, '0')}/${year}`;
 }
 
-function round2(n) {
+export function round2(n) {
   return Math.round((Number(n) || 0) * 100) / 100;
+}
+
+const STRING_OVERRIDE_FIELDS = new Set(['pay_date', 'pf_no', 'uan']);
+
+/** Money / display fields HR/Admin may override on a draft slip. */
+export const SALARY_OVERRIDE_FIELDS = [
+  'base_salary',
+  'overtime_amount',
+  'overtime_hours',
+  'deduction_amount',
+  'leave_deduction_amount',
+  'early_checkout_deduction_amount',
+  'bond_security_deduction',
+  'bond_security_percent',
+  'tds',
+  'paid_days',
+  'leave_days',
+  'lop_days',
+  'pay_date',
+  'pf_no',
+  'uan',
+];
+
+export function sanitizeLineItems(items) {
+  if (!Array.isArray(items)) return [];
+  return items
+    .map((item) => ({
+      label: String(item?.label || '').trim().slice(0, 80),
+      amount: round2(item?.amount),
+    }))
+    .filter((item) => item.label && item.amount !== 0);
+}
+
+export function pickSalaryOverrides(source = {}) {
+  const overrides = {};
+  for (const key of SALARY_OVERRIDE_FIELDS) {
+    if (source[key] === undefined || source[key] === null) continue;
+    if (STRING_OVERRIDE_FIELDS.has(key)) {
+      const value = String(source[key]).trim();
+      if (!value) continue;
+      overrides[key] = value;
+      continue;
+    }
+    if (source[key] === '') continue;
+    const num = Number(source[key]);
+    if (!Number.isFinite(num)) continue;
+    overrides[key] = round2(num);
+  }
+  return overrides;
+}
+
+export function customLinesTotal(items) {
+  return round2((items || []).reduce((sum, item) => sum + (Number(item.amount) || 0), 0));
+}
+
+export function computeSlipNetPay(parts) {
+  return round2(
+    (Number(parts.base_salary) || 0) +
+      (Number(parts.overtime_amount) || 0) +
+      customLinesTotal(parts.custom_earnings) -
+      (Number(parts.deduction_amount) || 0) -
+      (Number(parts.leave_deduction_amount) || 0) -
+      (Number(parts.early_checkout_deduction_amount) || 0) -
+      (Number(parts.bond_security_deduction) || 0) -
+      (Number(parts.tds) || 0) -
+      customLinesTotal(parts.custom_deductions)
+  );
+}
+
+export function applySalaryAdjustments(draft, overrides = {}, extras = {}) {
+  const next = { ...draft };
+  const applied = pickSalaryOverrides(overrides);
+  for (const [key, value] of Object.entries(applied)) {
+    next[key] = value;
+  }
+  next.custom_earnings = sanitizeLineItems(
+    extras.custom_earnings !== undefined ? extras.custom_earnings : draft.custom_earnings
+  );
+  next.custom_deductions = sanitizeLineItems(
+    extras.custom_deductions !== undefined ? extras.custom_deductions : draft.custom_deductions
+  );
+  next.net_pay = computeSlipNetPay(next);
+  return { values: next, overrides: applied };
+}
+
+/** Re-apply stored HR overrides + custom lines on top of a fresh auto-calc. */
+export function mergeSalaryDraft(draft, existing, body = {}) {
+  const overrides = {
+    ...(existing?.overrides && typeof existing.overrides === 'object' ? existing.overrides : {}),
+    ...pickSalaryOverrides(body),
+  };
+  return applySalaryAdjustments(draft, overrides, {
+    custom_earnings: body.custom_earnings ?? existing?.custom_earnings,
+    custom_deductions: body.custom_deductions ?? existing?.custom_deductions,
+  });
+}
+
+export function toPersistedSlipFields(values) {
+  const { pending_hours, carried_forward_hours, needs_shortfall_decision, ...slipFields } = values;
+  if (!slipFields.shortfall_action) delete slipFields.shortfall_action;
+  return { slipFields, pending_hours, carried_forward_hours, needs_shortfall_decision };
 }
 
 /**
@@ -142,6 +243,7 @@ export async function calculateSalaryDraft(employeeId, month, year, options = {}
 
   const { working_days } = await getWorkingDaysInMonth(year, month);
   const lop_days = await computeLopDays(employeeId, month, year);
+  const leave_days = round2(summary?.approved_leave_days_in_month || 0);
   const paid_days = Math.max(0, round2(working_days - lop_days));
   const early_checkout_stats = await computeEarlyCheckoutStats(employeeId, month, year);
   const early_checkout_minutes = early_checkout_stats.minutes;
@@ -166,14 +268,19 @@ export async function calculateSalaryDraft(employeeId, month, year, options = {}
   const bond_security_deduction = bond_security_percent > 0 ? (base * bond_security_percent) / 100 : 0;
 
   const tds = Number(options.tds) || 0;
-  const net_pay =
-    base -
-    deduction_amount -
-    leave_deduction_amount -
-    early_checkout_deduction_amount +
-    overtime_amount -
-    bond_security_deduction -
-    tds;
+  const custom_earnings = sanitizeLineItems(options.custom_earnings);
+  const custom_deductions = sanitizeLineItems(options.custom_deductions);
+  const net_pay = computeSlipNetPay({
+    base_salary: base,
+    overtime_amount,
+    deduction_amount,
+    leave_deduction_amount,
+    early_checkout_deduction_amount,
+    bond_security_deduction,
+    tds,
+    custom_earnings,
+    custom_deductions,
+  });
 
   const companyKey = options.company_key === 'ondial' ? 'ondial' : 'kriraai';
   const company = SALARY_COMPANIES[companyKey];
@@ -199,9 +306,13 @@ export async function calculateSalaryDraft(employeeId, month, year, options = {}
     bond_security_deduction: round2(bond_security_deduction),
     bond_security_percent,
     tds: round2(tds),
+    custom_earnings,
+    custom_deductions,
     net_pay: round2(net_pay),
     paid_days,
+    leave_days,
     lop_days,
+    working_days,
     pay_date: options.pay_date || formatPayDate(month, year),
     company_key: company.key,
     company_name: company.companyName,

@@ -4,7 +4,7 @@ import AuditLog from '../models/AuditLog.js';
 import { parseListQuery, listResponse } from '../utils/helpers.js';
 import { applyShortfallDecision, recalculateMonthlySummary } from '../services/monthlyHours.js';
 import { getEffectiveShiftForEmployee } from '../services/shift.js';
-import { calculateSalaryDraft } from '../services/salaryCalc.js';
+import { calculateSalaryDraft, mergeSalaryDraft, toPersistedSlipFields } from '../services/salaryCalc.js';
 
 export async function list(req, res) {
   try {
@@ -145,12 +145,15 @@ export async function decideShortfall(req, res) {
         });
       }
       const draft = await calculateSalaryDraft(employee_id, Number(month), Number(year), { company_key });
-      const { pending_hours, carried_forward_hours, needs_shortfall_decision, ...slipFields } = draft;
-      if (!slipFields.shortfall_action) delete slipFields.shortfall_action;
+      const { values, overrides } = mergeSalaryDraft(draft, existing, {});
+      const { slipFields } = toPersistedSlipFields(values);
       slip = await SalarySlip.findOneAndUpdate(
         { employee_id, month: Number(month), year: Number(year) },
         {
           ...slipFields,
+          overrides,
+          custom_earnings: values.custom_earnings,
+          custom_deductions: values.custom_deductions,
           status: 'Draft',
           payment_status: existing?.payment_status || 'Pending',
           adjustment_note: `Salary deduction for ${draft.shortfall_hours}h shortfall.`,

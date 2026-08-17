@@ -21,6 +21,29 @@ const schema = new mongoose.Schema(
     bond_security_deduction: { type: Number, default: 0 },
     bond_security_percent: { type: Number, default: 0 },
     tds: { type: Number, default: 0 },
+    /** HR/Admin extra earning / deduction lines (label + amount). */
+    custom_earnings: {
+      type: [
+        {
+          _id: false,
+          label: { type: String, default: '' },
+          amount: { type: Number, default: 0 },
+        },
+      ],
+      default: [],
+    },
+    custom_deductions: {
+      type: [
+        {
+          _id: false,
+          label: { type: String, default: '' },
+          amount: { type: Number, default: 0 },
+        },
+      ],
+      default: [],
+    },
+    /** Fields HR/Admin overrode; re-applied after auto-calc on generate/finalize. */
+    overrides: { type: mongoose.Schema.Types.Mixed, default: {} },
     net_pay: { type: Number, default: 0 },
     /** Payslip display meta (Zoho-style) */
     company_key: { type: String, enum: ['kriraai', 'ondial'], default: 'kriraai' },
@@ -31,7 +54,11 @@ const schema = new mongoose.Schema(
     },
     pay_date: { type: String, default: '' },
     paid_days: { type: Number, default: 0 },
+    /** Approved leave days in the month (paid + unpaid). */
+    leave_days: { type: Number, default: 0 },
     lop_days: { type: Number, default: 0 },
+    /** Calendar working days used for per-day leave deduction. */
+    working_days: { type: Number, default: 0 },
     pf_no: { type: String, default: 'NA' },
     uan: { type: String, default: 'NA' },
     status: { type: String, enum: ['Draft', 'Finalized'], default: 'Draft', index: true },

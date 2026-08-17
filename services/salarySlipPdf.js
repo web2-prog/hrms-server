@@ -138,7 +138,7 @@ export function renderSalarySlipPdf(res, form) {
 
   const cardX = left + width - 170;
   const cardY = y;
-  doc.roundedRect(cardX, cardY, 170, 88, 4).strokeColor('#d5d5d5').stroke();
+  doc.roundedRect(cardX, cardY, 170, 108, 4).strokeColor('#d5d5d5').stroke();
   doc.rect(cardX, cardY, 170, 52).fill('#e6f4ea');
   doc
     .fillColor('#1a1a1a')
@@ -153,10 +153,11 @@ export function renderSalarySlipPdf(res, form) {
   doc
     .fillColor('#888888')
     .fontSize(9)
-    .text(`Paid Days   ${form.paidDays}`, cardX + 12, cardY + 58, { width: 146 });
-  doc.text(`LOP Days    ${form.lopDays}`, cardX + 12, cardY + 72, { width: 146 });
+    .text(`Paid Days      ${form.paidDays ?? 0}`, cardX + 12, cardY + 58, { width: 146 });
+  doc.text(`Leave Count   ${form.leaveDays ?? 0}`, cardX + 12, cardY + 72, { width: 146 });
+  doc.text(`LOP Days       ${form.lopDays ?? 0}`, cardX + 12, cardY + 86, { width: 146 });
 
-  y = Math.max(dy, cardY + 100);
+  y = Math.max(dy, cardY + 120);
   doc.moveTo(left, y).lineTo(right, y).strokeColor('#e8e8e8').stroke();
   y += 12;
 
@@ -203,6 +204,11 @@ export function renderSalarySlipPdf(res, form) {
   const earnings = [
     { label: 'Basic', amount: form.basic, ytd: form.ytdBasic },
     ...(form.overtime > 0 ? [{ label: 'Overtime', amount: form.overtime, ytd: form.ytdOvertime }] : []),
+    ...((form.customEarnings || []).map((item) => ({
+      label: item.label,
+      amount: item.amount,
+      ytd: item.ytd ?? item.amount,
+    }))),
   ];
   const deductions = [];
   if (form.shortfallDeduction > 0) {
@@ -212,13 +218,11 @@ export function renderSalarySlipPdf(res, form) {
       ytd: form.ytdShortfallDeduction,
     });
   }
-  if (form.leaveDeduction > 0) {
-    deductions.push({
-      label: 'Leave Deduction (LOP)',
-      amount: form.leaveDeduction,
-      ytd: form.ytdLeaveDeduction,
-    });
-  }
+  deductions.push({
+    label: 'Leave Deduction',
+    amount: form.leaveDeduction || 0,
+    ytd: form.ytdLeaveDeduction || 0,
+  });
   if (form.earlyCheckoutDeduction > 0) {
     deductions.push({
       label: 'Early Checkout Deduction',
@@ -235,6 +239,13 @@ export function renderSalarySlipPdf(res, form) {
     });
   }
   deductions.push({ label: 'TDS', amount: form.tds || 0, ytd: form.ytdTds || 0 });
+  for (const item of form.customDeductions || []) {
+    deductions.push({
+      label: item.label,
+      amount: item.amount,
+      ytd: item.ytd ?? item.amount,
+    });
+  }
 
   const rows = Math.max(earnings.length, deductions.length, 1);
   doc.font('Helvetica').fontSize(10).fillColor('#333333');

@@ -1,7 +1,15 @@
 import Department from '../models/Department.js';
 import Employee from '../models/Employee.js';
 import { buildDepartmentAnalytics } from '../services/analytics.js';
-import { parseListQuery, listResponse } from '../utils/helpers.js';
+import { parseListQuery, listResponse, normalizeLateBufferMinutes } from '../utils/helpers.js';
+
+function normalizeDeptBody(body = {}) {
+  const next = { ...body };
+  if (next.late_buffer_minutes !== undefined) {
+    next.late_buffer_minutes = normalizeLateBufferMinutes(next.late_buffer_minutes);
+  }
+  return next;
+}
 
 export async function list(req, res) {
   try {
@@ -47,7 +55,7 @@ export async function list(req, res) {
 
 export async function create(req, res) {
   try {
-    const dept = await Department.create(req.body);
+    const dept = await Department.create(normalizeDeptBody(req.body));
     res.status(201).json(dept);
   } catch (e) {
     res.status(400).json({ message: e.message });
@@ -56,7 +64,10 @@ export async function create(req, res) {
 
 export async function update(req, res) {
   try {
-    const dept = await Department.findByIdAndUpdate(req.params.id, req.body, { new: true, runValidators: true });
+    const dept = await Department.findByIdAndUpdate(req.params.id, normalizeDeptBody(req.body), {
+      new: true,
+      runValidators: true,
+    });
     if (!dept) return res.status(404).json({ message: 'Not found' });
     res.json(dept);
   } catch (e) {

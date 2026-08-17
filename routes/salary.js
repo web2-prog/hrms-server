@@ -12,5 +12,6 @@ router.post('/:id/finalize', authorize('admin', 'hr'), ctrl.finalize);
 router.post('/:id/reverse', authorize('admin'), ctrl.reverse);
 router.patch('/:id/payment', authorize('admin', 'hr'), ctrl.updatePayment);
 router.patch('/:id/company', authorize('admin', 'hr'), ctrl.updateCompany);
+router.patch('/:id/adjust', authorize('admin', 'hr'), ctrl.updateAdjustments);
 router.get('/:id/pdf', authorize('admin', 'hr', 'employee'), ctrl.downloadPdf);
 export default router;

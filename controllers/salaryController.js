@@ -1,7 +1,7 @@
 import SalarySlip from '../models/SalarySlip.js';
 import Employee from '../models/Employee.js';
 import AuditLog from '../models/AuditLog.js';
-import { calculateSalaryDraft, SALARY_COMPANIES } from '../services/salaryCalc.js';
+import { calculateSalaryDraft, SALARY_COMPANIES, mergeSalaryDraft, toPersistedSlipFields, applySalaryAdjustments, pickSalaryOverrides, computeSlipNetPay } from '../services/salaryCalc.js';
 import { buildPayslipForm } from '../services/payslipForm.js';
 import { parseListQuery, listResponse } from '../utils/helpers.js';
 import { applyEmployeeListScope } from '../utils/employeeScope.js';
@@ -68,9 +68,51 @@ export async function getOne(req, res) {
   }
 }
 
+function shortfallNote(draft, adjustment_note) {
+  if (adjustment_note) return adjustment_note;
+  if (draft.needs_shortfall_decision && draft.pending_hours > 0) {
+    return `${draft.pending_hours}h pending — decide Salary Deduction or Carry Forward on Performance before finalizing.`;
+  }
+  if (draft.shortfall_action === 'carry_forward' && draft.pending_hours > 0) {
+    return `${draft.pending_hours}h pending carried forward to next month (no salary deduction).`;
+  }
+  if (draft.shortfall_action === 'deduct' && draft.shortfall_hours > 0) {
+    return `Salary deduction for ${draft.shortfall_hours}h shortfall.`;
+  }
+  return '';
+}
+
+async function upsertDraftFromCalc(employeeId, month, year, body, userId, existing) {
+  const draft = await calculateSalaryDraft(employeeId, month, year, {
+    company_key: body.company_key,
+    pay_date: body.pay_date,
+    tds: body.tds,
+    pf_no: body.pf_no,
+    uan: body.uan,
+  });
+  const { values, overrides } = mergeSalaryDraft(draft, existing, body);
+  const { slipFields } = toPersistedSlipFields(values);
+  const note = shortfallNote(draft, body.adjustment_note || existing?.adjustment_note);
+  return SalarySlip.findOneAndUpdate(
+    { employee_id: employeeId, month, year },
+    {
+      ...slipFields,
+      overrides,
+      custom_earnings: values.custom_earnings,
+      custom_deductions: values.custom_deductions,
+      status: 'Draft',
+      payment_status: existing?.payment_status || 'Pending',
+      adjustment_note: note,
+      generated_by: userId,
+      generated_on: new Date(),
+    },
+    { upsert: true, new: true }
+  );
+}
+
 export async function generate(req, res) {
   try {
-    const { employee_id, month, year, adjustment_note, company_key, pay_date, tds, pf_no, uan } = req.body;
+    const { employee_id, month, year } = req.body;
     if (!employee_id || !month || !year) return res.status(400).json({ message: 'employee_id, month, year required' });
     if (Number(year) < 2026) return res.status(400).json({ message: 'Year must be 2026 or later' });
 
@@ -79,40 +121,17 @@ export async function generate(req, res) {
       return res.status(400).json({ message: 'Finalized slip exists; reverse/reissue required' });
     }
 
-    const draft = await calculateSalaryDraft(employee_id, Number(month), Number(year), {
-      company_key,
-      pay_date,
-      tds,
-      pf_no,
-      uan,
-    });
-
-    let note = adjustment_note || '';
-    if (!note && draft.needs_shortfall_decision && draft.pending_hours > 0) {
-      note = `${draft.pending_hours}h pending — decide Salary Deduction or Carry Forward on Performance before finalizing.`;
-    } else if (!note && draft.shortfall_action === 'carry_forward' && draft.pending_hours > 0) {
-      note = `${draft.pending_hours}h pending carried forward to next month (no salary deduction).`;
-    } else if (!note && draft.shortfall_action === 'deduct' && draft.shortfall_hours > 0) {
-      note = `Salary deduction for ${draft.shortfall_hours}h shortfall.`;
-    }
-
-    const { pending_hours, carried_forward_hours, needs_shortfall_decision, ...slipFields } = draft;
-    if (!slipFields.shortfall_action) delete slipFields.shortfall_action;
-    const slip = await SalarySlip.findOneAndUpdate(
-      { employee_id, month, year },
-      {
-        ...slipFields,
-        status: 'Draft',
-        payment_status: existing?.payment_status || 'Pending',
-        adjustment_note: note,
-        generated_by: req.user._id,
-        generated_on: new Date(),
-      },
-      { upsert: true, new: true }
-    ).populate({ path: 'employee_id', populate: { path: 'department_id' } });
-
-    const payslip = await buildPayslipForm(slip.toObject());
-    res.status(201).json({ ...slip.toObject(), payslip });
+    const slip = await upsertDraftFromCalc(
+      employee_id,
+      Number(month),
+      Number(year),
+      req.body,
+      req.user._id,
+      existing
+    );
+    const populated = await populateSlip(slip._id);
+    const payslip = await buildPayslipForm(populated.toObject());
+    res.status(201).json({ ...populated.toObject(), payslip });
   } catch (e) {
     res.status(400).json({ message: e.message });
   }
@@ -128,32 +147,18 @@ export async function generateBulk(req, res) {
     const skipped = [];
     for (const e of emps) {
       try {
-        const draft = await calculateSalaryDraft(e._id, Number(month), Number(year), { company_key });
         const existing = await SalarySlip.findOne({ employee_id: e._id, month, year });
         if (existing?.status === 'Finalized') {
           skipped.push({ employee_id: e._id, reason: 'Finalized' });
           continue;
         }
-        let note = '';
-        if (draft.needs_shortfall_decision && draft.pending_hours > 0) {
-          note = `${draft.pending_hours}h pending — decide Salary Deduction or Carry Forward on Performance before finalizing.`;
-        } else if (draft.shortfall_action === 'carry_forward' && draft.pending_hours > 0) {
-          note = `${draft.pending_hours}h pending carried forward to next month (no salary deduction).`;
-        } else if (draft.shortfall_action === 'deduct' && draft.shortfall_hours > 0) {
-          note = `Salary deduction for ${draft.shortfall_hours}h shortfall.`;
-        }
-        const { pending_hours, carried_forward_hours, needs_shortfall_decision, ...slipFields } = draft;
-        if (!slipFields.shortfall_action) delete slipFields.shortfall_action;
-        const slip = await SalarySlip.findOneAndUpdate(
-          { employee_id: e._id, month, year },
-          {
-            ...slipFields,
-            status: 'Draft',
-            adjustment_note: note,
-            generated_by: req.user._id,
-            generated_on: new Date(),
-          },
-          { upsert: true, new: true }
+        const slip = await upsertDraftFromCalc(
+          e._id,
+          Number(month),
+          Number(year),
+          { company_key },
+          req.user._id,
+          existing
         );
         results.push(slip);
       } catch (err) {
@@ -191,10 +196,18 @@ export async function finalize(req, res) {
       });
     }
 
-    // Refresh amounts from latest decision / attendance before finalize
-    const { pending_hours, carried_forward_hours, needs_shortfall_decision, ...slipFields } = draft;
-    if (!slipFields.shortfall_action) delete slipFields.shortfall_action;
+    // Refresh auto amounts, then re-apply HR/Admin overrides + custom lines
+    const { values, overrides } = mergeSalaryDraft(draft, slip, {
+      pay_date: slip.pay_date,
+      tds: slip.tds,
+      pf_no: slip.pf_no,
+      uan: slip.uan,
+    });
+    const { slipFields } = toPersistedSlipFields(values);
     Object.assign(slip, slipFields);
+    slip.overrides = overrides;
+    slip.custom_earnings = values.custom_earnings;
+    slip.custom_deductions = values.custom_deductions;
     if (!draft.shortfall_action) slip.shortfall_action = undefined;
 
     if (req.body.adjustment_note) slip.adjustment_note = req.body.adjustment_note;
@@ -204,8 +217,12 @@ export async function finalize(req, res) {
       slip.adjustment_note = `Salary deduction for ${draft.shortfall_hours}h shortfall.`;
     }
     if (req.body.net_pay != null) slip.net_pay = Number(req.body.net_pay);
+    else slip.net_pay = values.net_pay;
     slip.status = 'Finalized';
     slip.finalized_on = new Date();
+    slip.markModified('overrides');
+    slip.markModified('custom_earnings');
+    slip.markModified('custom_deductions');
     await slip.save();
     await AuditLog.create({
       action: 'salary_finalize',
@@ -275,6 +292,63 @@ export async function updateCompany(req, res) {
     res.json({ ...populated.toObject(), payslip });
   } catch (e) {
     res.status(500).json({ message: e.message });
+  }
+}
+
+/** HR/Admin set dynamic amounts, TDS/PF, paid days, and extra earning/deduction lines on a draft slip. */
+export async function updateAdjustments(req, res) {
+  try {
+    const slip = await SalarySlip.findById(req.params.id);
+    if (!slip) return res.status(404).json({ message: 'Not found' });
+    if (slip.status === 'Finalized') {
+      return res.status(400).json({ message: 'Reverse the slip before editing values' });
+    }
+
+    if (req.body.reset) {
+      const draft = await calculateSalaryDraft(slip.employee_id, slip.month, slip.year, {
+        company_key: slip.company_key,
+      });
+      const { slipFields } = toPersistedSlipFields(draft);
+      Object.assign(slip, slipFields);
+      slip.overrides = {};
+      slip.custom_earnings = [];
+      slip.custom_deductions = [];
+      slip.adjustment_note = shortfallNote(draft, '');
+      if (!draft.shortfall_action) slip.shortfall_action = undefined;
+    } else {
+      const nextOverrides = {
+        ...(slip.overrides && typeof slip.overrides === 'object' ? slip.overrides : {}),
+        ...pickSalaryOverrides(req.body),
+      };
+      const { values, overrides } = applySalaryAdjustments(slip.toObject(), nextOverrides, {
+        custom_earnings: req.body.custom_earnings !== undefined ? req.body.custom_earnings : slip.custom_earnings,
+        custom_deductions:
+          req.body.custom_deductions !== undefined ? req.body.custom_deductions : slip.custom_deductions,
+      });
+      const { slipFields } = toPersistedSlipFields(values);
+      Object.assign(slip, slipFields);
+      slip.overrides = overrides;
+      slip.custom_earnings = values.custom_earnings;
+      slip.custom_deductions = values.custom_deductions;
+      slip.net_pay = computeSlipNetPay(slip);
+      if (req.body.adjustment_note !== undefined) slip.adjustment_note = String(req.body.adjustment_note);
+    }
+
+    slip.markModified('overrides');
+    slip.markModified('custom_earnings');
+    slip.markModified('custom_deductions');
+    await slip.save();
+    await AuditLog.create({
+      action: 'salary_adjust',
+      performed_by: req.user._id,
+      target_employee_id: slip.employee_id,
+      details: { slip_id: slip._id, reset: Boolean(req.body.reset) },
+    });
+    const populated = await populateSlip(slip._id);
+    const payslip = await buildPayslipForm(populated.toObject());
+    res.json({ ...populated.toObject(), payslip });
+  } catch (e) {
+    res.status(400).json({ message: e.message });
   }
 }
 

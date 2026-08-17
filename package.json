@@ -14,6 +14,8 @@
     "seed:attendance": "node scripts/seedAttendanceFromCsv.js",
     "migrate:holidays": "node scripts/migrateHolidaysUnified.js",
     "migrate:hrms": "node scripts/migrateHrmsToNewHrms.js",
+    "migrate:may-aug": "node scripts/migrateMayAugHrms.js",
+    "set:late-buffer": "node scripts/setLateBuffer0905.js",
     "sync:recent": "node scripts/syncHrmsRecentDays.js",
     "verify:sync": "node scripts/verifyRecentSync.js",
     "set:leaves": "node scripts/setLeavesFromSheet.js"

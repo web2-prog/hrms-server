@@ -26,6 +26,22 @@ export async function computeYtdForSlip(employeeId, month, year, current) {
 
   const sum = (key) => prior.reduce((acc, s) => acc + (Number(s[key]) || 0), 0);
 
+  const ytdByLabel = (key, currentItems) => {
+    const map = {};
+    for (const s of prior) {
+      for (const item of s[key] || []) {
+        const label = String(item.label || '').trim();
+        if (!label) continue;
+        map[label] = (map[label] || 0) + (Number(item.amount) || 0);
+      }
+    }
+    return (currentItems || []).map((item) => {
+      const label = String(item.label || '').trim();
+      const amount = Number(item.amount) || 0;
+      return { label, amount: round2(amount), ytd: round2((map[label] || 0) + amount) };
+    });
+  };
+
   return {
     ytd_basic: round2(sum('base_salary') + (Number(current.base_salary) || 0)),
     ytd_overtime: round2(sum('overtime_amount') + (Number(current.overtime_amount) || 0)),
@@ -38,6 +54,8 @@ export async function computeYtdForSlip(employeeId, month, year, current) {
     ),
     ytd_bond_security: round2(sum('bond_security_deduction') + (Number(current.bond_security_deduction) || 0)),
     ytd_tds: round2(sum('tds') + (Number(current.tds) || 0)),
+    custom_earnings: ytdByLabel('custom_earnings', current.custom_earnings),
+    custom_deductions: ytdByLabel('custom_deductions', current.custom_deductions),
   };
 }
 
@@ -57,9 +75,13 @@ export async function buildPayslipForm(slip) {
   const earlyCheckoutMinutes = Number(slip.early_checkout_minutes) || 0;
   const bond = Number(slip.bond_security_deduction) || 0;
   const tds = Number(slip.tds) || 0;
-  const gross = round2(basic + overtime);
+  const customEarnings = ytd.custom_earnings || [];
+  const customDeductions = ytd.custom_deductions || [];
+  const extraEarn = round2(customEarnings.reduce((s, i) => s + (Number(i.amount) || 0), 0));
+  const extraDed = round2(customDeductions.reduce((s, i) => s + (Number(i.amount) || 0), 0));
+  const gross = round2(basic + overtime + extraEarn);
   const totalDeductions = round2(
-    shortfall + leaveDeduction + earlyCheckoutDeduction + bond + tds
+    shortfall + leaveDeduction + earlyCheckoutDeduction + bond + tds + extraDed
   );
   const net = round2(gross - totalDeductions);
 
@@ -87,7 +109,9 @@ export async function buildPayslipForm(slip) {
     pfNo: slip.pf_no || 'NA',
     uan: slip.uan || 'NA',
     paidDays: Number(slip.paid_days) || 0,
+    leaveDays: Number(slip.leave_days) || 0,
     lopDays: Number(slip.lop_days) || 0,
+    workingDays: Number(slip.working_days) || 0,
     month: slip.month,
     year: slip.year,
     basic,
@@ -106,6 +130,8 @@ export async function buildPayslipForm(slip) {
     ytdBondSecurity: ytd.ytd_bond_security,
     tds,
     ytdTds: ytd.ytd_tds,
+    customEarnings,
+    customDeductions,
     grossEarnings: gross,
     totalDeductions,
     netPay: Number(slip.net_pay) != null ? round2(slip.net_pay) : net,

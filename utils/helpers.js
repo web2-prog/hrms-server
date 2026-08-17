@@ -86,7 +86,13 @@ export function addMinutesToTime(t, mins) {
 
 /** Fixed late check-in penalty (minutes). Work counted from check-in + this when late. */
 export const LATE_CHECKIN_PENALTY_MINUTES = 15;
-export const DEFAULT_LATE_BUFFER_MINUTES = 5;
+/**
+ * Default grace after shift start. With company shift 08:45 this is through 09:05
+ * (inclusive of that minute); 09:06 applies the late penalty.
+ */
+export const DEFAULT_LATE_BUFFER_MINUTES = 20;
+/** Company-wide default late-until clock (used when seeding / backfilling). */
+export const DEFAULT_LATE_BUFFER_UNTIL = '09:05';
 
 export function normalizeLateBufferMinutes(value) {
   const minutes = Number(value);
@@ -96,7 +102,7 @@ export function normalizeLateBufferMinutes(value) {
 
 /**
  * The department buffer is inclusive to the whole cutoff minute.
- * Example: 09:00 shift + 5m buffer permits check-in through 09:05:59;
+ * Example: 08:45 shift + 20m buffer permits check-in through 09:05:59;
  * 09:06:00 and later is late.
  */
 export function isLateCheckIn(checkIn, shiftStart, bufferMinutes = DEFAULT_LATE_BUFFER_MINUTES) {
@@ -106,6 +112,20 @@ export function isLateCheckIn(checkIn, shiftStart, bufferMinutes = DEFAULT_LATE_
   if (checkInSeconds == null || shiftSeconds == null) return false;
   const firstPenaltySecond = shiftSeconds + (normalizeLateBufferMinutes(bufferMinutes) + 1) * 60;
   return checkInSeconds >= firstPenaltySecond;
+}
+
+/** HH:MM when late buffer ends (shift start + buffer minutes). */
+export function lateBufferUntil(shiftStart, bufferMinutes = DEFAULT_LATE_BUFFER_MINUTES) {
+  if (!shiftStart) return DEFAULT_LATE_BUFFER_UNTIL;
+  return addMinutesToTime(shiftStart, normalizeLateBufferMinutes(bufferMinutes)).slice(0, 5);
+}
+
+/** Minutes from shift start to a late-until clock (clamped 0–240). */
+export function lateBufferMinutesFromUntil(shiftStart, untilClock) {
+  if (!shiftStart || !untilClock) return DEFAULT_LATE_BUFFER_MINUTES;
+  const mins = Math.round(minutesBetween(shiftStart, untilClock));
+  if (!Number.isFinite(mins) || mins < 0) return 0;
+  return Math.max(0, Math.min(240, mins));
 }
 
 /**
