@@ -115,17 +115,59 @@ export function lateCheckInPenalty(checkIn, shiftStart, penaltyWaived = false) {
   };
 }
 
-export function todayISO(d = new Date()) {
+/** Business timezone for attendance clock times and "today". Vercel/UTC hosts must not use process local time. */
+export const APP_TIMEZONE = process.env.APP_TZ || 'Asia/Kolkata';
+
+function zonedParts(d = new Date(), timeZone = APP_TIMEZONE) {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  }).formatToParts(d);
+  const map = {};
+  for (const p of parts) {
+    if (p.type !== 'literal') map[p.type] = p.value;
+  }
+  if (map.hour === '24') map.hour = '00';
+  map.hour = String(map.hour ?? '0').padStart(2, '0');
+  map.minute = String(map.minute ?? '0').padStart(2, '0');
+  map.second = String(map.second ?? '0').padStart(2, '0');
+  map.month = String(map.month ?? '1').padStart(2, '0');
+  map.day = String(map.day ?? '1').padStart(2, '0');
+  return map;
+}
+
+/**
+ * Calendar date YYYY-MM-DD.
+ * No argument: current business date in APP_TIMEZONE (Asia/Kolkata).
+ * With a Date: that Date's local calendar parts (used for date iteration).
+ */
+export function todayISO(d) {
+  if (arguments.length === 0 || d == null) {
+    const p = zonedParts(new Date());
+    return `${p.year}-${p.month}-${p.day}`;
+  }
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, '0');
   const day = String(d.getDate()).padStart(2, '0');
   return `${y}-${m}-${day}`;
 }
 
-/** Current local time as HH:MM:SS */
-export function nowTime() {
-  const d = new Date();
-  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`;
+/** Current business time as HH:MM:SS in APP_TIMEZONE (Asia/Kolkata) */
+export function nowTime(d = new Date()) {
+  const p = zonedParts(d);
+  return `${p.hour}:${p.minute}:${p.second}`;
+}
+
+/** Current business year/month in APP_TIMEZONE */
+export function nowYearMonth(d = new Date()) {
+  const p = zonedParts(d);
+  return { year: Number(p.year), month: Number(p.month) };
 }
 
 /** Normalize free-text time to HH:MM:SS (accepts HH:MM or HH:MM:SS) */

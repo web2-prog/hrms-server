@@ -1,7 +1,7 @@
 import Attendance from '../models/Attendance.js';
 import Employee from '../models/Employee.js';
 import EarlyCheckoutRequest from '../models/EarlyCheckoutRequest.js';
-import { parseListQuery, listResponse, todayISO, nowTime, minutesBetween, normalizeTime, parseBreakMinutes, effectiveWorkStart, lateCheckInPenalty, LATE_CHECKIN_PENALTY_MINUTES } from '../utils/helpers.js';
+import { parseListQuery, listResponse, todayISO, nowTime, nowYearMonth, APP_TIMEZONE, minutesBetween, normalizeTime, parseBreakMinutes, effectiveWorkStart, lateCheckInPenalty, LATE_CHECKIN_PENALTY_MINUTES } from '../utils/helpers.js';
 import { applyEmployeeListScope } from '../utils/employeeScope.js';
 import { getEffectiveShiftForEmployee, resolveEffectiveShift } from '../services/shift.js';
 import { recalculateAttendanceFields } from '../services/attendanceCalc.js';
@@ -56,8 +56,7 @@ export async function myToday(req, res) {
       await rec.save();
     }
     const shift = await getEffectiveShiftForEmployee(req.user._id);
-    const month = new Date().getMonth() + 1;
-    const year = new Date().getFullYear();
+    const { month, year } = nowYearMonth();
     const summary = await recalculateMonthlySummary(req.user._id, month, year);
     // Latest early-checkout request for today (if any) so the dashboard can show pending/decided state.
     const early_checkout_request = await EarlyCheckoutRequest.findOne({
@@ -77,6 +76,9 @@ export async function myToday(req, res) {
       late_minutes: penalty.late_minutes,
       penalty_minutes: penalty.penalty_minutes,
       late_penalty_rule_minutes: LATE_CHECKIN_PENALTY_MINUTES,
+      date: rec.date,
+      now: nowTime(),
+      timezone: APP_TIMEZONE,
     });
   } catch (e) {
     res.status(500).json({ message: e.message });
