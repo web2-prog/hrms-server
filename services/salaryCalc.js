@@ -11,7 +11,8 @@ import {
 } from './salarySchedule.js';
 import { getWorkingDaysInMonth } from './workingDays.js';
 import { getEffectiveShiftForEmployee } from './shift.js';
-import { datesInRange, minutesBetween } from '../utils/helpers.js';
+import { datesInRange } from '../utils/helpers.js';
+import { computeApprovedEarlyCheckoutStats } from './earlyCheckout.js';
 
 export const SALARY_COMPANIES = {
   kriraai: {
@@ -186,35 +187,13 @@ async function computeLopDays(employeeId, month, year) {
 }
 
 /**
- * Early-checkout stats for the month:
- * - minutes: every minute checked out before shift end (the early-checkout line)
- * - shortfall_hours: the portion of those early departures that already lowered the
- *   month's counted hours (days where actual < daily threshold). The monthly
- *   shortfall already contains these hours, so they must not be deducted twice.
+ * Early-checkout salary line uses approved EarlyCheckoutRequest records only.
+ * Leaving early without an approved request is reflected in Low / shortfall hours,
+ * not as a separate early-checkout deduction.
  */
 async function computeEarlyCheckoutStats(employeeId, month, year) {
-  const monthPrefix = `${year}-${String(month).padStart(2, '0')}`;
   const shift = await getEffectiveShiftForEmployee(employeeId);
-  const shiftEnd = shift?.shift_end || '17:30';
-  const threshold = shift?.working_hours_per_day ?? 8.25;
-
-  const rows = await Attendance.find({
-    employee_id: employeeId,
-    date: { $regex: `^${monthPrefix}` },
-    check_out: { $ne: null },
-  })
-    .select('check_out working_hours')
-    .lean();
-
-  let mins = 0;
-  let shortfallHours = 0;
-  for (const row of rows) {
-    const early = minutesBetween(row.check_out, shiftEnd);
-    if (early > 0) mins += early;
-    const actual = Number(row.working_hours) || 0;
-    if (row.check_out && actual < threshold) shortfallHours += threshold - actual;
-  }
-  return { minutes: round2(mins), shortfall_hours: round2(shortfallHours) };
+  return computeApprovedEarlyCheckoutStats(employeeId, month, year, shift);
 }
 
 export async function calculateSalaryDraft(employeeId, month, year, options = {}) {

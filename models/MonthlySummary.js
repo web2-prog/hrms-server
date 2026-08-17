@@ -3,8 +3,8 @@ import mongoose from 'mongoose';
 const schema = new mongoose.Schema(
   {
     employee_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Employee', required: true, index: true },
-    month: { type: Number, required: true, index: true },
-    year: { type: Number, required: true, index: true },
+    month: { type: Number, required: true, min: 1, max: 12, index: true },
+    year: { type: Number, required: true, min: 2026, index: true },
     /** Target before previous-month carry-in */
     base_monthly_target_hours: { type: Number, default: 0 },
     /** Hours carried INTO this month from previous month's carry_forward decision */

@@ -216,14 +216,26 @@ export async function listEarlyCheckoutRequests(req, res) {
     const filter = {};
     if (req.user.role === 'employee') {
       filter.employee_id = req.user._id;
-    } else {
-      if (req.query.status) filter.status = req.query.status;
-      if (req.query.date) filter.date = req.query.date;
+    } else if (req.query.employee_id) {
+      filter.employee_id = req.query.employee_id;
+    }
+    if (req.query.status) filter.status = req.query.status;
+    if (req.query.date) {
+      filter.date = req.query.date;
+    } else if (req.query.month && req.query.year) {
+      const m = String(req.query.month).padStart(2, '0');
+      filter.date = { $regex: `^${req.query.year}-${m}` };
+    } else if (req.query.year) {
+      filter.date = { $regex: `^${req.query.year}` };
+    } else if (req.query.from || req.query.to) {
+      filter.date = {};
+      if (req.query.from) filter.date.$gte = req.query.from;
+      if (req.query.to) filter.date.$lte = req.query.to;
     }
     const [data, total] = await Promise.all([
       EarlyCheckoutRequest.find(filter)
         .populate({ path: 'employee_id', populate: { path: 'department_id' } })
-        .sort({ createdAt: -1 })
+        .sort({ date: -1, createdAt: -1 })
         .skip(skip)
         .limit(limit),
       EarlyCheckoutRequest.countDocuments(filter),
@@ -325,12 +337,27 @@ export async function list(req, res) {
     if (req.query.exclude_auto_checkout === '1' || req.query.exclude_auto_checkout === 'true') {
       filter.auto_checkout = { $ne: true };
     }
-    if (req.query.month && req.query.year) {
+
+    const isoDate = (value) => {
+      const s = String(value || '').trim();
+      return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null;
+    };
+    const exactDate = isoDate(req.query.date);
+    const from = isoDate(req.query.from || req.query.date_from);
+    const to = isoDate(req.query.to || req.query.date_to);
+    if (exactDate) {
+      filter.date = exactDate;
+    } else if (from || to) {
+      filter.date = {};
+      if (from) filter.date.$gte = from;
+      if (to) filter.date.$lte = to;
+    } else if (req.query.month && req.query.year) {
       const m = String(req.query.month).padStart(2, '0');
       filter.date = { $regex: `^${req.query.year}-${m}` };
     } else if (req.query.year) {
       filter.date = { $regex: `^${req.query.year}` };
     }
+
     await applyEmployeeListScope(req, filter, { search });
 
     const [docs, total] = await Promise.all([

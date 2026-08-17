@@ -1,8 +1,24 @@
 import Attendance from '../models/Attendance.js';
 import OvertimeRequest from '../models/OvertimeRequest.js';
 import Employee from '../models/Employee.js';
+import Department from '../models/Department.js';
 import { resolveEffectiveShift } from '../services/shift.js';
 import { lateCheckInPenalty, minutesBetween } from '../utils/helpers.js';
+import { earlyMinutesForRequest, loadApprovedEarlyCheckouts } from './earlyCheckout.js';
+
+function departmentRefId(dept) {
+  if (!dept) return null;
+  if (typeof dept === 'object') {
+    const id = dept._id ?? dept.id;
+    return id ? String(id) : null;
+  }
+  return String(dept);
+}
+
+function departmentRefName(dept) {
+  if (dept && typeof dept === 'object' && dept.name) return dept.name;
+  return '—';
+}
 
 const MONTH_NAMES = [
   'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
@@ -45,15 +61,92 @@ function sumMonths(months) {
   return t;
 }
 
+function emptyEmpAgg(emp) {
+  return {
+    employee_id: emp._id,
+    name: emp.name,
+    code: emp.employee_id,
+    department: departmentRefName(emp.department_id),
+    department_id: departmentRefId(emp.department_id),
+    attendance_days: 0,
+    total_working_hours: 0,
+    early_checkout_minutes: 0,
+    early_checkout_count: 0,
+    late_checkin_count: 0,
+    late_checkin_minutes: 0,
+    penalty_minutes: 0,
+    low_time_hours: 0,
+    low_time_count: 0,
+    overtime_all_hours: 0,
+    overtime_general_hours: 0,
+    overtime_management_hours: 0,
+    overtime_pending_hours: 0,
+    attendance_ot_hours: 0,
+  };
+}
+
+function rollupByDepartment(byEmployee) {
+  const deptMap = new Map();
+  for (const e of byEmployee) {
+    const key = e.department_id ? String(e.department_id) : '__none__';
+    let d = deptMap.get(key);
+    if (!d) {
+      d = {
+        department_id: e.department_id || null,
+        department: e.department_id ? e.department : 'No department',
+        employee_count: 0,
+        attendance_days: 0,
+        total_working_hours: 0,
+        early_checkout_minutes: 0,
+        early_checkout_count: 0,
+        late_checkin_count: 0,
+        late_checkin_minutes: 0,
+        penalty_minutes: 0,
+        low_time_hours: 0,
+        low_time_count: 0,
+        overtime_all_hours: 0,
+        overtime_general_hours: 0,
+        overtime_management_hours: 0,
+        overtime_pending_hours: 0,
+        attendance_ot_hours: 0,
+      };
+      deptMap.set(key, d);
+    }
+    d.employee_count += 1;
+    d.attendance_days += e.attendance_days || 0;
+    d.total_working_hours = round2(d.total_working_hours + (e.total_working_hours || 0));
+    d.early_checkout_minutes += e.early_checkout_minutes || 0;
+    d.early_checkout_count += e.early_checkout_count || 0;
+    d.late_checkin_count += e.late_checkin_count || 0;
+    d.late_checkin_minutes += e.late_checkin_minutes || 0;
+    d.penalty_minutes += e.penalty_minutes || 0;
+    d.low_time_hours = round2(d.low_time_hours + (e.low_time_hours || 0));
+    d.low_time_count += e.low_time_count || 0;
+    d.overtime_all_hours = round2(d.overtime_all_hours + (e.overtime_all_hours || 0));
+    d.overtime_general_hours = round2(d.overtime_general_hours + (e.overtime_general_hours || 0));
+    d.overtime_management_hours = round2(d.overtime_management_hours + (e.overtime_management_hours || 0));
+    d.overtime_pending_hours = round2(d.overtime_pending_hours + (e.overtime_pending_hours || 0));
+    d.attendance_ot_hours = round2(d.attendance_ot_hours + (e.attendance_ot_hours || 0));
+  }
+  return [...deptMap.values()].sort((a, b) => a.department.localeCompare(b.department));
+}
+
 /**
- * Org analytics for a calendar year (optionally filtered by dept/employee).
- * Late / early / penalty are derived from check times vs effective shift
- * (no dedicated late/early request entities exist yet).
+ * Org analytics for a calendar year (optionally filtered by month/dept/employee).
+ * Monthly series always covers Jan–Dec for the year+dept scope.
+ * `totals` / `by_employee` / `by_department` respect the optional month filter.
+ * Late / early / penalty are derived from check times vs effective shift.
  */
-export async function buildYearAnalytics({ year, department_id, employee_id }) {
+export async function buildYearAnalytics({ year, month, department_id, employee_id }) {
   const empFilter = { role: 'employee', status: 'active' };
   if (department_id) empFilter.department_id = department_id;
   if (employee_id) empFilter._id = employee_id;
+
+  const filterMonth = month != null && month !== '' ? Number(month) : null;
+  const scopedMonth =
+    filterMonth != null && Number.isFinite(filterMonth) && filterMonth >= 1 && filterMonth <= 12
+      ? filterMonth
+      : null;
 
   const employees = await Employee.find(empFilter)
     .populate('department_id')
@@ -70,15 +163,21 @@ export async function buildYearAnalytics({ year, department_id, employee_id }) {
 
   if (!empIds.length) {
     return {
-      year,
+      year: Number(year),
+      month: scopedMonth,
       months,
       totals: sumMonths(months),
       employee_count: 0,
       by_employee: [],
+      by_department: [],
     };
   }
 
-  const [attendance, overtime] = await Promise.all([
+  // Always load the full year for the monthly chart; employee/dept rollups
+  // only include rows in the selected month when month is set.
+  // Early checkout KPIs use approved EarlyCheckoutRequest records only —
+  // not every attendance checkout before shift end.
+  const [attendance, overtime, earlyCheckouts] = await Promise.all([
     Attendance.find({
       employee_id: { $in: empIds },
       date: { $regex: `^${year}` },
@@ -91,31 +190,12 @@ export async function buildYearAnalytics({ year, department_id, employee_id }) {
     })
       .select('employee_id date hours status ot_type')
       .lean(),
+    loadApprovedEarlyCheckouts({ employeeIds: empIds, datePrefix: String(year) }),
   ]);
 
   const empAgg = new Map();
   for (const emp of employees) {
-    empAgg.set(String(emp._id), {
-      employee_id: emp._id,
-      name: emp.name,
-      code: emp.employee_id,
-      department: emp.department_id?.name || '—',
-      department_id: emp.department_id?._id || null,
-      attendance_days: 0,
-      total_working_hours: 0,
-      early_checkout_minutes: 0,
-      early_checkout_count: 0,
-      late_checkin_count: 0,
-      late_checkin_minutes: 0,
-      penalty_minutes: 0,
-      low_time_hours: 0,
-      low_time_count: 0,
-      overtime_all_hours: 0,
-      overtime_general_hours: 0,
-      overtime_management_hours: 0,
-      overtime_pending_hours: 0,
-      attendance_ot_hours: 0,
-    });
+    empAgg.set(String(emp._id), emptyEmpAgg(emp));
   }
 
   for (const row of attendance) {
@@ -123,27 +203,22 @@ export async function buildYearAnalytics({ year, department_id, employee_id }) {
     if (m < 1 || m > 12) continue;
     const bucket = months[m - 1];
     const eid = String(row.employee_id);
-    const empRow = empAgg.get(eid);
+    const inScope = !scopedMonth || m === scopedMonth;
+    const empRow = inScope ? empAgg.get(eid) : null;
     const shift = shiftByEmp.get(eid);
     if (!shift) continue;
 
+    // Only days with a real check-in count as tracked attendance.
+    const tracked = !!(row.check_in && String(row.check_in).trim());
     const worked = Number(row.working_hours || 0);
-    bucket.total_working_hours = round2(bucket.total_working_hours + worked);
-    if (empRow) {
-      empRow.total_working_hours = round2(empRow.total_working_hours + worked);
-      empRow.attendance_days += 1;
-    }
-
-    if (row.check_out && shift.shift_end) {
-      const earlyMins = minutesBetween(row.check_out, shift.shift_end);
-      if (earlyMins > 0) {
-        bucket.early_checkout_minutes += earlyMins;
-        bucket.early_checkout_count += 1;
-        if (empRow) {
-          empRow.early_checkout_minutes += earlyMins;
-          empRow.early_checkout_count += 1;
-        }
+    if (tracked) {
+      bucket.total_working_hours = round2(bucket.total_working_hours + worked);
+      if (empRow) {
+        empRow.total_working_hours = round2(empRow.total_working_hours + worked);
+        empRow.attendance_days += 1;
       }
+    } else {
+      continue;
     }
 
     if (row.check_in && shift.shift_start) {
@@ -197,12 +272,32 @@ export async function buildYearAnalytics({ year, department_id, employee_id }) {
     }
   }
 
+  for (const req of earlyCheckouts) {
+    const m = Number(String(req.date).slice(5, 7));
+    if (m < 1 || m > 12) continue;
+    const bucket = months[m - 1];
+    const eid = String(req.employee_id);
+    const inScope = !scopedMonth || m === scopedMonth;
+    const empRow = inScope ? empAgg.get(eid) : null;
+    const shift = shiftByEmp.get(eid);
+    if (!shift?.shift_end) continue;
+    const earlyMins = earlyMinutesForRequest(req.requested_time, shift.shift_end);
+    if (earlyMins <= 0) continue;
+    bucket.early_checkout_minutes += earlyMins;
+    bucket.early_checkout_count += 1;
+    if (empRow) {
+      empRow.early_checkout_minutes += earlyMins;
+      empRow.early_checkout_count += 1;
+    }
+  }
+
   for (const ot of overtime) {
     const m = Number(String(ot.date).slice(5, 7));
     if (m < 1 || m > 12) continue;
     const bucket = months[m - 1];
     const eid = String(ot.employee_id);
-    const empRow = empAgg.get(eid);
+    const inScope = !scopedMonth || m === scopedMonth;
+    const empRow = inScope ? empAgg.get(eid) : null;
     const hours = Number(ot.hours || 0);
     if (!hours) continue;
 
@@ -242,23 +337,48 @@ export async function buildYearAnalytics({ year, department_id, employee_id }) {
     }))
     .sort((a, b) => a.name.localeCompare(b.name));
 
+  const by_department = rollupByDepartment(by_employee);
+  const totals = scopedMonth ? { ...months[scopedMonth - 1] } : sumMonths(months);
+  if (totals.month != null) delete totals.month;
+  if (totals.label != null) delete totals.label;
+
   return {
     year: Number(year),
+    month: scopedMonth,
     months,
-    totals: sumMonths(months),
+    totals,
     employee_count: employees.length,
     by_employee,
+    by_department,
   };
 }
 
 /**
- * Per-department attendance aggregates for a calendar year, grouped from the
- * same per-employee metrics as buildYearAnalytics (consistent numbers).
+ * Per-department attendance aggregates for a calendar year (optionally a month),
+ * grouped from the same per-employee metrics as buildYearAnalytics.
  * Only active employee-role members are counted.
+ * Every department is returned (even with zero attendance) so UI lookups never miss.
  */
-export async function buildDepartmentAnalytics({ year }) {
-  const org = await buildYearAnalytics({ year });
+export async function buildDepartmentAnalytics({ year, month }) {
+  const [org, departments] = await Promise.all([
+    buildYearAnalytics({ year, month }),
+    Department.find({}).select('_id name').sort({ name: 1 }).lean(),
+  ]);
+
   const deptMap = new Map();
+  for (const dept of departments) {
+    const key = String(dept._id);
+    deptMap.set(key, {
+      department_id: key,
+      department: dept.name,
+      employee_count: 0,
+      attendance_days: 0,
+      total_working_hours: 0,
+      late_checkin_count: 0,
+      early_checkout_count: 0,
+      penalty_minutes: 0,
+    });
+  }
 
   for (const e of org.by_employee) {
     const key = e.department_id ? String(e.department_id) : null;
@@ -287,6 +407,7 @@ export async function buildDepartmentAnalytics({ year }) {
 
   return {
     year: Number(org.year),
+    month: org.month ?? null,
     departments: [...deptMap.values()].sort((a, b) => a.department.localeCompare(b.department)),
   };
 }

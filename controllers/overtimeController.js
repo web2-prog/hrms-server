@@ -116,12 +116,23 @@ export async function apply(req, res) {
   try {
     const { date, hours, reason } = req.body;
     if (!date) return res.status(400).json({ message: 'Date required' });
+    const match = String(date).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!match) return res.status(400).json({ message: 'Use a valid date in YYYY-MM-DD format' });
+    const [, yy, mm, dd] = match;
+    const parsed = new Date(Date.UTC(Number(yy), Number(mm) - 1, Number(dd)));
+    if (
+      parsed.getUTCFullYear() !== Number(yy) ||
+      parsed.getUTCMonth() !== Number(mm) - 1 ||
+      parsed.getUTCDate() !== Number(dd)
+    ) {
+      return res.status(400).json({ message: 'Use a valid calendar date' });
+    }
     if (!reason || !String(reason).trim()) return res.status(400).json({ message: 'Reason required' });
     const hrs = Number(hours);
     if (!hrs || hrs <= 0) return res.status(400).json({ message: 'Hours must be greater than 0' });
     if (hrs > 24) return res.status(400).json({ message: 'Hours cannot exceed 24' });
 
-    const year = parseInt(date.slice(0, 4), 10);
+    const year = Number(yy);
     if (year < 2026) return res.status(400).json({ message: 'Year must be 2026 or later' });
 
     const doc = await OvertimeRequest.create({

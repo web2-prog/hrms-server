@@ -138,7 +138,7 @@ export function renderSalarySlipPdf(res, form) {
 
   const cardX = left + width - 170;
   const cardY = y;
-  doc.roundedRect(cardX, cardY, 170, 108, 4).strokeColor('#d5d5d5').stroke();
+  doc.roundedRect(cardX, cardY, 170, 122, 4).strokeColor('#d5d5d5').stroke();
   doc.rect(cardX, cardY, 170, 52).fill('#e6f4ea');
   doc
     .fillColor('#1a1a1a')
@@ -154,10 +154,16 @@ export function renderSalarySlipPdf(res, form) {
     .fillColor('#888888')
     .fontSize(9)
     .text(`Paid Days      ${form.paidDays ?? 0}`, cardX + 12, cardY + 58, { width: 146 });
-  doc.text(`Leave Count   ${form.leaveDays ?? 0}`, cardX + 12, cardY + 72, { width: 146 });
-  doc.text(`LOP Days       ${form.lopDays ?? 0}`, cardX + 12, cardY + 86, { width: 146 });
+  doc.text(`Total Leave     ${form.leaveDays ?? 0}`, cardX + 12, cardY + 72, { width: 146 });
+  doc.text(`LOP Days        ${form.lopDays ?? 0}`, cardX + 12, cardY + 86, { width: 146 });
+  doc.text(
+    `Early Checkout  ${Math.round(Number(form.earlyCheckoutMinutes) || 0)} min`,
+    cardX + 12,
+    cardY + 100,
+    { width: 146 }
+  );
 
-  y = Math.max(dy, cardY + 120);
+  y = Math.max(dy, cardY + 134);
   doc.moveTo(left, y).lineTo(right, y).strokeColor('#e8e8e8').stroke();
   y += 12;
 
@@ -219,13 +225,13 @@ export function renderSalarySlipPdf(res, form) {
     });
   }
   deductions.push({
-    label: 'Leave Deduction',
+    label: `Leave Deduction (${form.lopDays || 0} LOP day${Number(form.lopDays) === 1 ? '' : 's'})`,
     amount: form.leaveDeduction || 0,
     ytd: form.ytdLeaveDeduction || 0,
   });
   if (form.earlyCheckoutDeduction > 0) {
     deductions.push({
-      label: 'Early Checkout Deduction',
+      label: `Early Checkout Deduction (${Math.round(Number(form.earlyCheckoutMinutes) || 0)} min)`,
       amount: form.earlyCheckoutDeduction,
       ytd: form.ytdEarlyCheckoutDeduction,
     });

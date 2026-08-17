@@ -94,7 +94,10 @@ export async function getOne(req, res) {
 export async function analytics(req, res) {
   try {
     const now = new Date();
-    const year = Number(req.query.year) || Math.max(2026, now.getFullYear());
+    const requested = Number(req.query.year);
+    const year = Number.isFinite(requested) && requested >= 2026
+      ? requested
+      : Math.max(2026, now.getFullYear());
     const data = await buildDepartmentAnalytics({ year });
     res.json(data);
   } catch (e) {

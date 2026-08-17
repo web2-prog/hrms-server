@@ -4,6 +4,14 @@ import { applyEmployeeListScope } from '../utils/employeeScope.js';
 import { recalculateMonthlySummary } from '../services/monthlyHours.js';
 import { datesInRange } from '../utils/helpers.js';
 
+function isValidIsoDate(value) {
+  const s = String(value || '');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+  const [y, m, d] = s.split('-').map(Number);
+  const date = new Date(Date.UTC(y, m - 1, d));
+  return date.getUTCFullYear() === y && date.getUTCMonth() === m - 1 && date.getUTCDate() === d;
+}
+
 export async function list(req, res) {
   try {
     const { page, limit, skip, search } = parseListQuery(req.query);
@@ -75,6 +83,10 @@ export async function apply(req, res) {
   try {
     const { from_date, to_date, reason, day_type } = req.body;
     if (!from_date || !to_date) return res.status(400).json({ message: 'Dates required' });
+    if (!isValidIsoDate(from_date) || !isValidIsoDate(to_date)) {
+      return res.status(400).json({ message: 'Use valid dates in YYYY-MM-DD format' });
+    }
+    if (from_date > to_date) return res.status(400).json({ message: 'End date cannot be before start date' });
     const resolvedDayType = day_type === 'Half Day' ? 'Half Day' : 'Full Day';
     if (resolvedDayType === 'Half Day' && from_date !== to_date) {
       return res.status(400).json({ message: 'Half Day leave must be for a single date' });
@@ -99,12 +111,15 @@ export async function decide(req, res) {
     if (!['Approved', 'Rejected'].includes(status)) return res.status(400).json({ message: 'Invalid status' });
     const leave = await Leave.findById(req.params.id);
     if (!leave) return res.status(404).json({ message: 'Not found' });
+    const previousStatus = leave.status;
     leave.status = status;
     leave.approved_by = req.user._id;
     leave.approved_on = new Date();
     await leave.save();
 
-    if (status === 'Approved') {
+    // Any approval-state change affects the monthly target, including
+    // Approved → Rejected reversals.
+    if (previousStatus !== status && (previousStatus === 'Approved' || status === 'Approved')) {
       const months = new Set();
       for (const d of datesInRange(leave.from_date, leave.to_date)) {
         months.add(`${d.slice(0, 4)}-${d.slice(5, 7)}`);

@@ -58,7 +58,12 @@ export async function getMonthlySummary(req, res) {
     if (req.user.role === 'employee' && String(eid) !== String(req.user._id)) {
       return res.status(403).json({ message: 'Forbidden' });
     }
-    const doc = await recalculateMonthlySummary(eid, Number(month), Number(year));
+    const m = Number(month);
+    const y = Number(year);
+    if (!Number.isInteger(m) || m < 1 || m > 12 || !Number.isInteger(y) || y < 2026) {
+      return res.status(400).json({ message: 'Use a valid month (1-12) and year (2026 or later)' });
+    }
+    const doc = await recalculateMonthlySummary(eid, m, y);
     res.json(doc);
   } catch (e) {
     res.status(500).json({ message: e.message });
