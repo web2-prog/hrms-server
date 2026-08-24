@@ -55,6 +55,10 @@ export async function list(req, res) {
       filter.company_key = req.query.company_key;
     }
     await applyEmployeeListScope(req, filter, { search });
+    // Employees only see slips that HR/Admin has emailed to them.
+    if (req.user.role === 'employee') {
+      filter.sent_on = { $ne: null };
+    }
     const [data, total] = await Promise.all([
       SalarySlip.find(filter)
         .populate({ path: 'employee_id', populate: { path: 'department_id' } })
@@ -73,8 +77,15 @@ export async function getOne(req, res) {
   try {
     const slip = await populateSlip(req.params.id);
     if (!slip) return res.status(404).json({ message: 'Not found' });
-    if (req.user.role === 'employee' && String(req.user._id) !== String(slip.employee_id._id)) {
-      return res.status(403).json({ message: 'Forbidden' });
+    if (req.user.role === 'employee') {
+      if (String(req.user._id) !== String(slip.employee_id._id)) {
+        return res.status(403).json({ message: 'Forbidden' });
+      }
+      if (!slip.sent_on) {
+        return res.status(403).json({
+          message: 'This salary slip is not available yet. You can view it after HR/Admin sends it.',
+        });
+      }
     }
     const payslip = await buildPayslipForm(slip.toObject());
     res.json({ ...slip.toObject(), payslip });
@@ -83,16 +94,33 @@ export async function getOne(req, res) {
   }
 }
 
+function formatPendingHours(hours) {
+  const n = Number(hours) || 0;
+  return Number.isInteger(n) ? String(n) : n.toFixed(2).replace(/\.?0+$/, '');
+}
+
+function finalizeBlockedMessage(draft, month, year) {
+  const hours = formatPendingHours(draft.pending_hours);
+  const period = month && year ? ` for ${month}/${year}` : '';
+  return (
+    `Cannot finalize yet: ${hours} hour(s) are still pending${period}. ` +
+    `Open Performance and choose either "Salary Deduction" or "Carry Forward" for those hours, then try Finalize again.`
+  );
+}
+
 function shortfallNote(draft, adjustment_note) {
   if (adjustment_note) return adjustment_note;
   if (draft.needs_shortfall_decision && draft.pending_hours > 0) {
-    return `${draft.pending_hours}h pending — decide Salary Deduction or Carry Forward on Performance before finalizing.`;
+    return (
+      `${formatPendingHours(draft.pending_hours)}h pending — ` +
+      `choose Salary Deduction or Carry Forward on Performance before finalizing.`
+    );
   }
   if (draft.shortfall_action === 'carry_forward' && draft.pending_hours > 0) {
-    return `${draft.pending_hours}h pending carried forward to next month (no salary deduction).`;
+    return `${formatPendingHours(draft.pending_hours)}h pending carried forward to next month (no salary deduction).`;
   }
   if (draft.shortfall_action === 'deduct' && draft.shortfall_hours > 0) {
-    return `Salary deduction for ${draft.shortfall_hours}h shortfall.`;
+    return `Salary deduction for ${formatPendingHours(draft.shortfall_hours)}h shortfall.`;
   }
   return '';
 }
@@ -207,7 +235,11 @@ export async function finalize(req, res) {
     });
     if (draft.needs_shortfall_decision) {
       return res.status(400).json({
-        message: `Pending ${draft.pending_hours}h — choose Salary Deduction or Carry Forward on Performance before finalizing`,
+        message: finalizeBlockedMessage(draft, slip.month, slip.year),
+        code: 'PENDING_SHORTFALL_DECISION',
+        pending_hours: draft.pending_hours,
+        month: slip.month,
+        year: slip.year,
       });
     }
 
@@ -371,8 +403,15 @@ export async function downloadPdf(req, res) {
   try {
     const slip = await populateSlip(req.params.id);
     if (!slip) return res.status(404).json({ message: 'Not found' });
-    if (req.user.role === 'employee' && String(req.user._id) !== String(slip.employee_id._id)) {
-      return res.status(403).json({ message: 'Forbidden' });
+    if (req.user.role === 'employee') {
+      if (String(req.user._id) !== String(slip.employee_id._id)) {
+        return res.status(403).json({ message: 'Forbidden' });
+      }
+      if (!slip.sent_on) {
+        return res.status(403).json({
+          message: 'This salary slip is not available yet. You can download it after HR/Admin sends it.',
+        });
+      }
     }
 
     const payslip = await buildPayslipForm(slip.toObject());

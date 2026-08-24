@@ -23,22 +23,3 @@ export const uploadPhoto = multer({
     cb(null, true);
   },
 });
-
-const OFFER_LETTER_MIMES = new Set([
-  'application/pdf',
-  'application/msword',
-  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  'image/jpeg',
-  'image/png',
-]);
-
-export const uploadOfferLetter = multer({
-  storage,
-  limits: { fileSize: 10 * 1024 * 1024 },
-  fileFilter: (_req, file, cb) => {
-    if (!OFFER_LETTER_MIMES.has(file.mimetype)) {
-      return cb(new Error('Offer letter must be PDF, Word, JPG, or PNG'));
-    }
-    cb(null, true);
-  },
-});

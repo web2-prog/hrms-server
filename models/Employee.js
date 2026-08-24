@@ -12,8 +12,6 @@ const employeeSchema = new mongoose.Schema(
     role: { type: String, enum: ['admin', 'hr', 'employee'], default: 'employee', index: true },
     joining_date: { type: Date },
     photo_url: { type: String, default: '' },
-    offer_letter_url: { type: String, default: '' },
-    offer_letter_name: { type: String, default: '' },
     status: { type: String, enum: ['active', 'inactive'], default: 'active', index: true },
     base_salary: { type: Number, default: 0 },
     custom_shift_start: { type: String, default: null },

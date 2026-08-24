@@ -8,12 +8,6 @@ import {
   syncLegacyBondDetails,
   toISODate,
 } from '../services/salarySchedule.js';
-import path from 'path';
-import fs from 'fs';
-import { fileURLToPath } from 'url';
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const uploadDir = path.join(__dirname, '..', 'uploads');
 
 export async function list(req, res) {
   try {
@@ -190,86 +184,6 @@ export async function clearData(req, res) {
       performedBy: req.user._id,
     });
     res.json({ message: 'Data cleared', ...result });
-  } catch (e) {
-    res.status(500).json({ message: e.message });
-  }
-}
-
-export async function uploadOfferLetter(req, res) {
-  try {
-    if (!req.file) return res.status(400).json({ message: 'Offer letter file is required' });
-    const emp = await Employee.findById(req.params.id);
-    if (!emp) return res.status(404).json({ message: 'Not found' });
-
-    // Remove previous file if present
-    if (emp.offer_letter_url) {
-      const prev = path.join(uploadDir, path.basename(emp.offer_letter_url));
-      if (fs.existsSync(prev)) {
-        try {
-          fs.unlinkSync(prev);
-        } catch {
-          /* ignore */
-        }
-      }
-    }
-
-    emp.offer_letter_url = `/uploads/${req.file.filename}`;
-    emp.offer_letter_name = req.file.originalname || req.file.filename;
-    await emp.save();
-
-    const populated = await Employee.findById(emp._id).populate('department_id');
-    const json = populated.toJSON();
-    json.bonds = ensureBondsArray(json);
-    json.current_salary = resolveCurrentSalary(json);
-    res.json(json);
-  } catch (e) {
-    res.status(400).json({ message: e.message });
-  }
-}
-
-export async function downloadOfferLetter(req, res) {
-  try {
-    const emp = await Employee.findById(req.params.id).select('name employee_id offer_letter_url offer_letter_name');
-    if (!emp) return res.status(404).json({ message: 'Not found' });
-    if (req.user.role === 'employee' && String(req.user._id) !== String(emp._id)) {
-      return res.status(403).json({ message: 'Forbidden' });
-    }
-    if (!emp.offer_letter_url) {
-      return res.status(404).json({ message: 'Offer letter not uploaded' });
-    }
-
-    const filePath = path.join(uploadDir, path.basename(emp.offer_letter_url));
-    if (!fs.existsSync(filePath)) {
-      return res.status(404).json({ message: 'Offer letter file missing' });
-    }
-
-    const downloadName =
-      emp.offer_letter_name ||
-      `Offer-Letter-${emp.employee_id || emp.name || emp._id}${path.extname(filePath)}`;
-    res.download(filePath, downloadName);
-  } catch (e) {
-    res.status(500).json({ message: e.message });
-  }
-}
-
-export async function removeOfferLetter(req, res) {
-  try {
-    const emp = await Employee.findById(req.params.id);
-    if (!emp) return res.status(404).json({ message: 'Not found' });
-    if (emp.offer_letter_url) {
-      const prev = path.join(uploadDir, path.basename(emp.offer_letter_url));
-      if (fs.existsSync(prev)) {
-        try {
-          fs.unlinkSync(prev);
-        } catch {
-          /* ignore */
-        }
-      }
-    }
-    emp.offer_letter_url = '';
-    emp.offer_letter_name = '';
-    await emp.save();
-    res.json({ message: 'Offer letter removed' });
   } catch (e) {
     res.status(500).json({ message: e.message });
   }
