@@ -9,7 +9,6 @@ function normalizeDeptBody(body = {}) {
   if (next.late_buffer_minutes !== undefined) {
     next.late_buffer_minutes = normalizeLateBufferMinutes(next.late_buffer_minutes);
   }
-  if (next.working_hours_per_day != null) {
   if (next.half_day_hours === '' || next.half_day_hours === undefined) {
     delete next.half_day_hours;
   } else if (next.half_day_hours != null) {
