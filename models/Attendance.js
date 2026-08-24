@@ -14,6 +14,12 @@ const attendanceSchema = new mongoose.Schema(
     surplus_shortfall: { type: Number, default: 0 }, // decimal hours (+ extra, - shortfall)
     /** When true, late check-in penalty minutes are waived for this day */
     penalty_waived: { type: Boolean, default: false },
+    /**
+     * HR/admin override for late check-in penalty minutes.
+     * null = use default rule (15m, or 0 when penalty_waived).
+     * 0 = waive; any other number replaces the default when late.
+     */
+    penalty_minutes_override: { type: Number, default: null },
     /** True when check_out was set automatically at 11:55 PM (no manual checkout) */
     auto_checkout: { type: Boolean, default: false },
   },

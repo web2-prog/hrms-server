@@ -182,7 +182,7 @@ export async function buildYearAnalytics({ year, month, department_id, employee_
       employee_id: { $in: empIds },
       date: { $regex: `^${year}` },
     })
-      .select('employee_id date check_in check_out working_hours status surplus_shortfall penalty_waived auto_checkout')
+      .select('employee_id date check_in check_out working_hours status surplus_shortfall penalty_waived penalty_minutes_override auto_checkout')
       .lean(),
     OvertimeRequest.find({
       employee_id: { $in: empIds },
@@ -228,7 +228,7 @@ export async function buildYearAnalytics({ year, month, department_id, employee_
         shift.shift_start,
         !!row.penalty_waived,
         shift.late_buffer_minutes,
-        row.date
+        row.penalty_minutes_override
       );
       if (penalty.late) {
         bucket.late_checkin_count += 1;

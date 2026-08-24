@@ -1,7 +1,7 @@
 import Attendance from '../models/Attendance.js';
 import Employee from '../models/Employee.js';
 import EarlyCheckoutRequest from '../models/EarlyCheckoutRequest.js';
-import { parseListQuery, listResponse, todayISO, nowTime, nowYearMonth, APP_TIMEZONE, minutesBetween, normalizeTime, parseBreakMinutes, effectiveWorkStart, lateCheckInPenalty, lateCheckInCutoffForDate, LATE_CHECKIN_PENALTY_MINUTES } from '../utils/helpers.js';
+import { parseListQuery, listResponse, todayISO, nowTime, nowYearMonth, APP_TIMEZONE, minutesBetween, normalizeTime, parseBreakMinutes, effectiveWorkStart, lateCheckInPenalty, LATE_CHECKIN_PENALTY_MINUTES, normalizePenaltyMinutes } from '../utils/helpers.js';
 import { applyEmployeeListScope } from '../utils/employeeScope.js';
 import { getEffectiveShiftForEmployee, resolveEffectiveShift } from '../services/shift.js';
 import { recalculateAttendanceFields } from '../services/attendanceCalc.js';
@@ -17,9 +17,42 @@ function liveBreakMinutes(rec, now) {
   return breakMins;
 }
 
+/**
+ * Apply HR/admin late-penalty override from request body.
+ * Accepts `penalty_minutes` or `penalty_minutes_override`.
+ * Empty / null clears the override (back to default 15m rule).
+ * Setting minutes also clears waive; waive alone forces 0 effective minutes.
+ */
+function applyPenaltyOverride(rec, body = {}) {
+  const raw =
+    body.penalty_minutes_override !== undefined
+      ? body.penalty_minutes_override
+      : body.penalty_minutes !== undefined
+        ? body.penalty_minutes
+        : undefined;
+  if (raw === undefined) return;
+
+  if (raw === null || raw === '') {
+    rec.penalty_minutes_override = null;
+    return;
+  }
+
+  const mins = normalizePenaltyMinutes(raw);
+  if (mins == null) return;
+  rec.penalty_minutes_override = mins;
+  // Custom minutes replace waive — explicit 0 is a soft waive via override.
+  if (mins > 0) rec.penalty_waived = false;
+}
+
 function liveWorkMinutes(rec, now, shiftStart, lateBufferMinutes) {
   if (!rec.check_in) return 0;
-  const start = effectiveWorkStart(rec.check_in, shiftStart, !!rec.penalty_waived, lateBufferMinutes);
+  const start = effectiveWorkStart(
+    rec.check_in,
+    shiftStart,
+    !!rec.penalty_waived,
+    lateBufferMinutes,
+    rec.penalty_minutes_override
+  );
   const end = rec.check_out || now;
   const span = Math.max(0, minutesBetween(start, end));
   return Math.max(0, span - liveBreakMinutes(rec, now));
@@ -63,9 +96,21 @@ export async function myToday(req, res) {
       employee_id: req.user._id,
       date: todayISO(),
     }).sort({ createdAt: -1 });
-    const penalty = lateCheckInPenalty(rec.check_in, shift?.shift_start, !!rec.penalty_waived, shift?.late_buffer_minutes);
+    const penalty = lateCheckInPenalty(
+      rec.check_in,
+      shift?.shift_start,
+      !!rec.penalty_waived,
+      shift?.late_buffer_minutes,
+      rec.penalty_minutes_override
+    );
     const work_start = rec.check_in
-      ? effectiveWorkStart(rec.check_in, shift?.shift_start, !!rec.penalty_waived, shift?.late_buffer_minutes)
+      ? effectiveWorkStart(
+          rec.check_in,
+          shift?.shift_start,
+          !!rec.penalty_waived,
+          shift?.late_buffer_minutes,
+          rec.penalty_minutes_override
+        )
       : null;
     res.json({
       attendance: rec,
@@ -408,6 +453,7 @@ export async function update(req, res) {
     }
     if (break_total !== undefined) rec.break_total = Number(parseBreakMinutes(break_total).toFixed(4));
     if (penalty_waived !== undefined) rec.penalty_waived = !!penalty_waived;
+    applyPenaltyOverride(rec, req.body);
     if (end_break) {
       if (rec.break_started_at) {
         const mins = minutesBetween(rec.break_started_at, nowTime());
@@ -461,9 +507,21 @@ export async function listToday(req, res) {
       const live_status = computeLiveStatus(att, threshold, now, shift.shift_start, shift.late_buffer_minutes);
       const workMins = att ? liveWorkMinutes(att, now, shift.shift_start, shift.late_buffer_minutes) : 0;
       const breakMins = att ? liveBreakMinutes(att, now) : 0;
-      const penalty = lateCheckInPenalty(att?.check_in, shift.shift_start, !!att?.penalty_waived, shift.late_buffer_minutes);
+      const penalty = lateCheckInPenalty(
+        att?.check_in,
+        shift.shift_start,
+        !!att?.penalty_waived,
+        shift.late_buffer_minutes,
+        att?.penalty_minutes_override
+      );
       const work_start = att?.check_in
-        ? effectiveWorkStart(att.check_in, shift.shift_start, !!att.penalty_waived, shift.late_buffer_minutes)
+        ? effectiveWorkStart(
+            att.check_in,
+            shift.shift_start,
+            !!att.penalty_waived,
+            shift.late_buffer_minutes,
+            att.penalty_minutes_override
+          )
         : null;
       return {
         employee: {
@@ -490,6 +548,8 @@ export async function listToday(req, res) {
         live_status,
         surplus_shortfall: att?.surplus_shortfall || 0,
         penalty_waived: !!att?.penalty_waived,
+        penalty_minutes_override:
+          att?.penalty_minutes_override == null ? null : Number(att.penalty_minutes_override),
         late_minutes: penalty.late_minutes,
         penalty_minutes: penalty.penalty_minutes,
         late_penalty_rule_minutes: LATE_CHECKIN_PENALTY_MINUTES,
@@ -546,6 +606,7 @@ export async function updateToday(req, res) {
     }
     if (break_total !== undefined) rec.break_total = Number(parseBreakMinutes(break_total).toFixed(4));
     if (penalty_waived !== undefined) rec.penalty_waived = !!penalty_waived;
+    applyPenaltyOverride(rec, req.body);
 
     if (end_break) {
       if (rec.break_started_at) {
@@ -583,18 +644,31 @@ export async function updateToday(req, res) {
         break_total: rec.break_total,
         break_started_at: rec.break_started_at,
         penalty_waived: rec.penalty_waived,
+        penalty_minutes_override: rec.penalty_minutes_override,
       },
     });
 
     const shift = await getEffectiveShiftForEmployee(employeeId);
     const now = nowTime();
     const live_status = computeLiveStatus(rec.toObject(), shift.working_hours_per_day, now, shift.shift_start, shift.late_buffer_minutes);
-    const penalty = lateCheckInPenalty(rec.check_in, shift.shift_start, !!rec.penalty_waived, shift.late_buffer_minutes);
+    const penalty = lateCheckInPenalty(
+      rec.check_in,
+      shift.shift_start,
+      !!rec.penalty_waived,
+      shift.late_buffer_minutes,
+      rec.penalty_minutes_override
+    );
     res.json({
       ...rec.toObject(),
       live_status,
       work_start: rec.check_in
-        ? effectiveWorkStart(rec.check_in, shift.shift_start, !!rec.penalty_waived, shift.late_buffer_minutes)
+        ? effectiveWorkStart(
+            rec.check_in,
+            shift.shift_start,
+            !!rec.penalty_waived,
+            shift.late_buffer_minutes,
+            rec.penalty_minutes_override
+          )
         : null,
       late_minutes: penalty.late_minutes,
       penalty_minutes: penalty.penalty_minutes,

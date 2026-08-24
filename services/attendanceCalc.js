@@ -10,7 +10,13 @@ import { computeDailyStatus } from './shift.js';
  */
 export function recalculateAttendanceFields(record, threshold, shiftStart = null, lateBufferMinutes = undefined) {
   let breakMinutes = Number(record.break_total || 0);
-  const workStart = effectiveWorkStart(record.check_in, shiftStart, !!record.penalty_waived, lateBufferMinutes);
+  const workStart = effectiveWorkStart(
+    record.check_in,
+    shiftStart,
+    !!record.penalty_waived,
+    lateBufferMinutes,
+    record.penalty_minutes_override
+  );
 
   if (record.check_in && record.check_out) {
     const totalMin = Math.max(0, minutesBetween(workStart, record.check_out));
