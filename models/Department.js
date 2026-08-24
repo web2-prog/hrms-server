@@ -3,7 +3,9 @@ import mongoose from 'mongoose';
 const departmentSchema = new mongoose.Schema(
   {
     name: { type: String, required: true, trim: true, unique: true },
-    working_hours_per_day: { type: Number, required: true }, // hours as decimal e.g. 8.25
+    working_hours_per_day: { type: Number, required: true }, // hours as decimal e.g. 8.25 = 8h 15m
+    /** Half-day leave / target credit; defaults to working_hours_per_day ÷ 2 when unset */
+    half_day_hours: { type: Number, default: null },
     shift_start: { type: String, required: true }, // "09:30"
     shift_end: { type: String, required: true },
     // Grace period after shift start. The cutoff minute is inclusive:

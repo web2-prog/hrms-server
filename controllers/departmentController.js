@@ -1,6 +1,7 @@
 import Department from '../models/Department.js';
 import Employee from '../models/Employee.js';
 import { buildDepartmentAnalytics } from '../services/analytics.js';
+import { defaultHalfDayHours, resolveHalfDayHours } from '../services/shift.js';
 import { parseListQuery, listResponse, normalizeLateBufferMinutes } from '../utils/helpers.js';
 
 function normalizeDeptBody(body = {}) {
@@ -8,9 +9,24 @@ function normalizeDeptBody(body = {}) {
   if (next.late_buffer_minutes !== undefined) {
     next.late_buffer_minutes = normalizeLateBufferMinutes(next.late_buffer_minutes);
   }
+  if (next.working_hours_per_day != null) {
+  if (next.half_day_hours === '' || next.half_day_hours === undefined) {
+    delete next.half_day_hours;
+  } else if (next.half_day_hours != null) {
+    next.half_day_hours = Math.round(Number(next.half_day_hours) * 10000) / 10000;
+  }
+  const fullDay = next.working_hours_per_day;
+  if (fullDay != null && next.half_day_hours == null) {
+    next.half_day_hours = defaultHalfDayHours(fullDay);
+  }
+  if (fullDay != null && next.half_day_hours != null && next.half_day_hours > fullDay) {
+    throw new Error('Half-day hours cannot exceed full-day hours');
+  }
+  if (fullDay != null && next.half_day_hours != null) {
+    next.half_day_hours = resolveHalfDayHours(fullDay, next.half_day_hours);
+  }
   return next;
 }
-
 export async function list(req, res) {
   try {
     const { page, limit, skip, search } = parseListQuery(req.query);

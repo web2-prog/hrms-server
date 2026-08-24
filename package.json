@@ -17,6 +17,7 @@
     "migrate:may-aug": "node scripts/migrateMayAugHrms.js",
     "set:late-buffer": "node scripts/setLateBuffer0905.js",
     "sync:recent": "node scripts/syncHrmsRecentDays.js",
+    "sync:overtime": "node scripts/syncHrmsOvertime.js",
     "verify:sync": "node scripts/verifyRecentSync.js",
     "set:leaves": "node scripts/setLeavesFromSheet.js"
   },
@@ -30,6 +31,7 @@
     "jsonwebtoken": "^9.0.2",
     "mongoose": "^8.9.3",
     "multer": "^1.4.5-lts.1",
+    "nodemailer": "^9.0.5",
     "pdfkit": "^0.15.2"
   }
 }

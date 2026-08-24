@@ -3,7 +3,7 @@ import Leave from '../models/Leave.js';
 import MonthlySummary from '../models/MonthlySummary.js';
 import OvertimeRequest from '../models/OvertimeRequest.js';
 import { getWorkingDaysInMonth } from './workingDays.js';
-import { getEffectiveShiftForEmployee } from './shift.js';
+import { defaultHalfDayHours, getEffectiveShiftForEmployee } from './shift.js';
 import { recalculateAttendanceFields } from './attendanceCalc.js';
 import { datesInRange } from '../utils/helpers.js';
 
@@ -37,6 +37,7 @@ export async function recalculateMonthlySummary(employeeId, month, year) {
   const shift = await getEffectiveShiftForEmployee(employeeId);
   if (!shift) return null;
   const threshold = shift.working_hours_per_day;
+  const halfDayHours = shift.half_day_hours ?? defaultHalfDayHours(threshold);
 
   const { working_days, working_dates } = await getWorkingDaysInMonth(year, month);
   const monthPrefix = `${year}-${String(month).padStart(2, '0')}`;
@@ -49,18 +50,24 @@ export async function recalculateMonthlySummary(employeeId, month, year) {
   }).lean();
 
   const leaveDayMap = new Map();
+  const leaveHoursMap = new Map();
   for (const lv of leaves) {
     const fraction = lv.day_type === 'Half Day' ? 0.5 : 1;
+    const leaveHours = lv.day_type === 'Half Day' ? halfDayHours : threshold;
     for (const d of datesInRange(lv.from_date, lv.to_date)) {
       if (d.startsWith(monthPrefix) && working_dates.includes(d)) {
         leaveDayMap.set(d, Math.max(leaveDayMap.get(d) || 0, fraction));
+        leaveHoursMap.set(d, Math.max(leaveHoursMap.get(d) || 0, leaveHours));
       }
     }
   }
   let approved_leave_days_in_month = 0;
   for (const frac of leaveDayMap.values()) approved_leave_days_in_month += frac;
 
-  let base_monthly_target_hours = threshold * working_days - threshold * approved_leave_days_in_month;
+  let leaveHoursDeduction = 0;
+  for (const hrs of leaveHoursMap.values()) leaveHoursDeduction += hrs;
+
+  let base_monthly_target_hours = threshold * working_days - leaveHoursDeduction;
   if (base_monthly_target_hours < 0) base_monthly_target_hours = 0;
 
   const carried_forward_hours = await getCarriedForwardHours(employeeId, month, year);

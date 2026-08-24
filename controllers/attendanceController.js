@@ -1,7 +1,7 @@
 import Attendance from '../models/Attendance.js';
 import Employee from '../models/Employee.js';
 import EarlyCheckoutRequest from '../models/EarlyCheckoutRequest.js';
-import { parseListQuery, listResponse, todayISO, nowTime, nowYearMonth, APP_TIMEZONE, minutesBetween, normalizeTime, parseBreakMinutes, effectiveWorkStart, lateCheckInPenalty, LATE_CHECKIN_PENALTY_MINUTES } from '../utils/helpers.js';
+import { parseListQuery, listResponse, todayISO, nowTime, nowYearMonth, APP_TIMEZONE, minutesBetween, normalizeTime, parseBreakMinutes, effectiveWorkStart, lateCheckInPenalty, lateCheckInCutoffForDate, LATE_CHECKIN_PENALTY_MINUTES } from '../utils/helpers.js';
 import { applyEmployeeListScope } from '../utils/employeeScope.js';
 import { getEffectiveShiftForEmployee, resolveEffectiveShift } from '../services/shift.js';
 import { recalculateAttendanceFields } from '../services/attendanceCalc.js';
@@ -98,6 +98,12 @@ export async function checkIn(req, res) {
     rec.status = 'Working';
     rec.auto_checkout = false;
     await rec.save();
+    await AuditLog.create({
+      action: 'check_in',
+      performed_by: req.user._id,
+      target_employee_id: req.user._id,
+      details: { date: rec.date, check_in: rec.check_in },
+    });
     res.json(rec);
   } catch (e) {
     res.status(500).json({ message: e.message });
@@ -168,6 +174,18 @@ export async function checkOut(req, res) {
         },
       }
     );
+    await AuditLog.create({
+      action: 'check_out',
+      performed_by: req.user._id,
+      target_employee_id: req.user._id,
+      details: {
+        date: rec.date,
+        check_in: rec.check_in,
+        check_out: rec.check_out,
+        status: rec.status,
+        working_hours: rec.working_hours,
+      },
+    });
     res.json(rec);
   } catch (e) {
     res.status(500).json({ message: e.message });

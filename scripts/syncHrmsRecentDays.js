@@ -24,6 +24,10 @@ import Leave from '../models/Leave.js';
 import OvertimeRequest from '../models/OvertimeRequest.js';
 import { getEffectiveShiftForEmployee, computeDailyStatus } from '../services/shift.js';
 import { recalculateMonthlySummary } from '../services/monthlyHours.js';
+import {
+  extractGeneralOtFromAttendance,
+  extractManagementOtFromAttendance,
+} from './syncHrmsOvertime.js';
 
 dotenv.config();
 
@@ -556,45 +560,65 @@ async function main() {
   }
   console.log(`Leaves inserted: ${leavesInserted}, skipped: ${leavesSkipped}`);
 
-  // ---- Management OT (Approved) into overtime_requests ----
+  // ---- Overtime (general + management) into overtime_requests ----
   if (!DRY_RUN && touchedObjectIds.length) {
     const delOt = await OvertimeRequest.deleteMany({
       employee_id: { $in: touchedObjectIds },
       date: { $gte: FROM, $lte: TO },
-      ot_type: 'Management',
-      reason: { $regex: /^\[Migrated management OT\]/ },
     });
-    console.log(`Cleared prior migrated management OT in range: ${delOt.deletedCount}`);
+    console.log(`Cleared overtime_requests in range: ${delOt.deletedCount}`);
   }
 
-  let otInserted = 0;
-  for (const bucket of reportByEmp.values()) {
-    const employee = legacyToEmp.get(bucket.legacy_user_id);
-    if (!employee) continue;
-    for (const ot of bucket.overtime) {
-      if (!ot.apply) continue;
-      const hours = ot.hours;
-      if (hours < 0.01) continue;
-      const reason = `[Migrated management OT] ${ot.reason || 'Approved in legacy HRMS'}`;
+  let otGeneralInserted = 0;
+  let otMgmtInserted = 0;
+  for (let i = 0; i < attRows.length; i += 1) {
+    const r = attRows[i];
+    const emp = legacyToEmp.get(String(r.userId));
+    if (!emp) continue;
+    const date = blank(r.date).slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
+
+    const general = extractGeneralOtFromAttendance(r);
+    if (general) {
       if (!DRY_RUN) {
         await OvertimeRequest.create({
-          employee_id: employee._id,
-          date: ot.date,
-          hours,
-          reason,
-          status: 'Approved',
-          ot_type: 'Management',
-          applied_on: new Date(),
-          decided_on: new Date(),
+          employee_id: emp._id,
+          date,
+          hours: general.hours,
+          reason: `[Migrated general OT] ${general.reason}`,
+          status: general.status,
+          ot_type: general.ot_type,
+          applied_on: general.applied_on,
+          decided_on: general.decided_on,
+          decision_note: `Imported from hrms.attendances.overtimeRequest (${FROM}..${TO})`,
+        });
+      }
+      otGeneralInserted += 1;
+      const [y, m] = date.split('-').map(Number);
+      monthKeys.add(`${emp._id}|${m}|${y}`);
+    }
+
+    const mgmt = extractManagementOtFromAttendance(r);
+    if (mgmt) {
+      if (!DRY_RUN) {
+        await OvertimeRequest.create({
+          employee_id: emp._id,
+          date,
+          hours: mgmt.hours,
+          reason: `[Migrated management OT] ${mgmt.reason}`,
+          status: mgmt.status,
+          ot_type: mgmt.ot_type,
+          applied_on: mgmt.applied_on,
+          decided_on: mgmt.decided_on,
           decision_note: `Imported from hrms.attendances.managementOvertime (${FROM}..${TO})`,
         });
       }
-      otInserted += 1;
-      const [y, m] = ot.date.split('-').map(Number);
-      monthKeys.add(`${employee._id}|${m}|${y}`);
+      otMgmtInserted += 1;
+      const [y, m] = date.split('-').map(Number);
+      monthKeys.add(`${emp._id}|${m}|${y}`);
     }
   }
-  console.log(`Management OT requests inserted: ${otInserted}`);
+  console.log(`Overtime inserted: general=${otGeneralInserted}, management=${otMgmtInserted}`);
 
   // ---- Monthly summaries ----
   const monthList = [...monthKeys].map((k) => {
@@ -655,7 +679,8 @@ async function main() {
   lines.push(`| Attendance skipped (unmapped/bad) | ${attSkipped} |`);
   lines.push(`| Leaves overlapping range | ${leaveInRange.length} |`);
   lines.push(`| Leaves inserted | ${leavesInserted} |`);
-  lines.push(`| Management OT inserted | ${otInserted} |`);
+  lines.push(`| General OT inserted | ${otGeneralInserted} |`);
+  lines.push(`| Management OT inserted | ${otMgmtInserted} |`);
   lines.push(`| Monthly summaries recalculated | ${monthList.length} |`);
   lines.push('');
 
@@ -751,7 +776,8 @@ async function main() {
           attendance_skipped: attSkipped,
           leaves_source: leaveInRange.length,
           leaves_inserted: leavesInserted,
-          ot_inserted: otInserted,
+          ot_general_inserted: otGeneralInserted,
+          ot_management_inserted: otMgmtInserted,
           summaries: monthList.length,
         },
         employees: sorted,

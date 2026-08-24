@@ -19,14 +19,13 @@ const employeeSchema = new mongoose.Schema(
     custom_shift_start: { type: String, default: null },
     custom_shift_end: { type: String, default: null },
     custom_working_hours_per_day: { type: Number, default: null },
+    custom_half_day_hours: { type: Number, default: null },
     profile_details: {
       address: { type: String, default: '' },
       dob: { type: Date, default: null },
       gender: { type: String, default: '' },
-      marital_status: { type: String, default: '' },
       emergency_contact: { type: String, default: '' },
       personal_email: { type: String, default: '' },
-      blood_group: { type: String, default: '' },
       aadhaar_number: { type: String, default: '' },
     },
     bank_details: {
@@ -100,7 +99,12 @@ employeeSchema.methods.comparePassword = function (plain) {
 };
 
 employeeSchema.virtual('has_custom_shift').get(function () {
-  return !!(this.custom_shift_start || this.custom_shift_end || this.custom_working_hours_per_day != null);
+  return !!(
+    this.custom_shift_start ||
+    this.custom_shift_end ||
+    this.custom_working_hours_per_day != null ||
+    this.custom_half_day_hours != null
+  );
 });
 
 employeeSchema.set('toJSON', {

@@ -1,10 +1,10 @@
 export function parseListQuery(query) {
   const page = Math.max(1, parseInt(query.page, 10) || 1);
-  const rawLimit = String(query.limit || '10').toLowerCase();
+  const rawLimit = String(query.limit || '8').toLowerCase();
   const limit =
     rawLimit === 'all' || rawLimit === '0'
       ? 10000
-      : Math.min(10000, Math.max(1, parseInt(query.limit, 10) || 10));
+      : Math.min(10000, Math.max(1, parseInt(query.limit, 10) || 8));
   const skip = (page - 1) * limit;
   const search = (query.search || '').trim();
   return { page, limit, skip, search };

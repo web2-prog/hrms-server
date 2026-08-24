@@ -227,7 +227,8 @@ export async function buildYearAnalytics({ year, month, department_id, employee_
         row.check_in,
         shift.shift_start,
         !!row.penalty_waived,
-        shift.late_buffer_minutes
+        shift.late_buffer_minutes,
+        row.date
       );
       if (penalty.late) {
         bucket.late_checkin_count += 1;

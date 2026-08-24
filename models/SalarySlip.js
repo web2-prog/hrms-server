@@ -69,6 +69,10 @@ const schema = new mongoose.Schema(
     generated_by: { type: mongoose.Schema.Types.ObjectId, ref: 'Employee' },
     generated_on: { type: Date, default: Date.now },
     finalized_on: { type: Date, default: null },
+    /** Email delivery tracking */
+    sent_on: { type: Date, default: null },
+    sent_to: { type: String, default: '' },
+    sent_by: { type: mongoose.Schema.Types.ObjectId, ref: 'Employee', default: null },
   },
   { timestamps: true }
 );

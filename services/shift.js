@@ -2,21 +2,41 @@ import Employee from '../models/Employee.js';
 import Department from '../models/Department.js';
 import { DEFAULT_LATE_BUFFER_MINUTES, normalizeLateBufferMinutes } from '../utils/helpers.js';
 
+export function defaultHalfDayHours(fullDayHours) {
+  return Math.round((Number(fullDayHours) / 2) * 10000) / 10000;
+}
+
+export function resolveHalfDayHours(fullDayHours, explicitHalfDay) {
+  if (explicitHalfDay != null && Number.isFinite(Number(explicitHalfDay))) {
+    return Math.round(Number(explicitHalfDay) * 10000) / 10000;
+  }
+  return defaultHalfDayHours(fullDayHours);
+}
+
 export function resolveEffectiveShift(employee, department) {
   const dept = department || employee.department_id;
   const useCustom =
     employee.custom_shift_start ||
     employee.custom_shift_end ||
-    employee.custom_working_hours_per_day != null;
+    employee.custom_working_hours_per_day != null ||
+    employee.custom_half_day_hours != null;
+
+  const working_hours_per_day =
+    useCustom && employee.custom_working_hours_per_day != null
+      ? employee.custom_working_hours_per_day
+      : dept?.working_hours_per_day ?? 8.25;
+
+  const half_day_hours =
+    useCustom && employee.custom_half_day_hours != null
+      ? employee.custom_half_day_hours
+      : resolveHalfDayHours(working_hours_per_day, dept?.half_day_hours);
 
   return {
     shift_start: useCustom && employee.custom_shift_start ? employee.custom_shift_start : dept?.shift_start || '09:30',
     shift_end: useCustom && employee.custom_shift_end ? employee.custom_shift_end : dept?.shift_end || '17:30',
     // Company standard daily hours: 8h 15m (8.25) unless employee has a custom override
-    working_hours_per_day:
-      useCustom && employee.custom_working_hours_per_day != null
-        ? employee.custom_working_hours_per_day
-        : dept?.working_hours_per_day ?? 8.25,
+    working_hours_per_day,
+    half_day_hours,
     late_buffer_minutes: normalizeLateBufferMinutes(dept?.late_buffer_minutes ?? DEFAULT_LATE_BUFFER_MINUTES),
     has_custom: !!useCustom,
   };

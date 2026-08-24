@@ -27,6 +27,7 @@ export async function list(req, res) {
         { custom_shift_start: { $ne: null } },
         { custom_shift_end: { $ne: null } },
         { custom_working_hours_per_day: { $ne: null } },
+        { custom_half_day_hours: { $ne: null } },
       ];
     }
     if (search) {
@@ -90,6 +91,7 @@ export async function update(req, res) {
       updates.custom_shift_start = null;
       updates.custom_shift_end = null;
       updates.custom_working_hours_per_day = null;
+      updates.custom_half_day_hours = null;
     }
     delete updates.use_department_default;
     delete updates.password;

@@ -85,9 +85,7 @@ function amountToWords(amount) {
 /**
  * Zoho-style salary slip PDF (server-side) matching the React preview sections.
  */
-export function renderSalarySlipPdf(res, form) {
-  const doc = new PDFDocument({ size: 'A4', margin: 36 });
-  doc.pipe(res);
+function drawSalarySlipPdf(doc, form) {
 
   const monthLabel = MONTH_NAMES[form.month - 1] || '';
   const left = 36;
@@ -138,7 +136,7 @@ export function renderSalarySlipPdf(res, form) {
 
   const cardX = left + width - 170;
   const cardY = y;
-  doc.roundedRect(cardX, cardY, 170, 122, 4).strokeColor('#d5d5d5').stroke();
+  doc.roundedRect(cardX, cardY, 170, 108, 4).strokeColor('#d5d5d5').stroke();
   doc.rect(cardX, cardY, 170, 52).fill('#e6f4ea');
   doc
     .fillColor('#1a1a1a')
@@ -154,16 +152,10 @@ export function renderSalarySlipPdf(res, form) {
     .fillColor('#888888')
     .fontSize(9)
     .text(`Paid Days      ${form.paidDays ?? 0}`, cardX + 12, cardY + 58, { width: 146 });
-  doc.text(`Total Leave     ${form.leaveDays ?? 0}`, cardX + 12, cardY + 72, { width: 146 });
-  doc.text(`LOP Days        ${form.lopDays ?? 0}`, cardX + 12, cardY + 86, { width: 146 });
-  doc.text(
-    `Early Checkout  ${Math.round(Number(form.earlyCheckoutMinutes) || 0)} min`,
-    cardX + 12,
-    cardY + 100,
-    { width: 146 }
-  );
+  doc.text(`Leave Count   ${form.leaveDays ?? 0}`, cardX + 12, cardY + 72, { width: 146 });
+  doc.text(`LOP Days       ${form.lopDays ?? 0}`, cardX + 12, cardY + 86, { width: 146 });
 
-  y = Math.max(dy, cardY + 134);
+  y = Math.max(dy, cardY + 120);
   doc.moveTo(left, y).lineTo(right, y).strokeColor('#e8e8e8').stroke();
   y += 12;
 
@@ -225,7 +217,7 @@ export function renderSalarySlipPdf(res, form) {
     });
   }
   deductions.push({
-    label: `Leave Deduction (${form.lopDays || 0} LOP day${Number(form.lopDays) === 1 ? '' : 's'})`,
+    label: 'Leave Deduction',
     amount: form.leaveDeduction || 0,
     ytd: form.ytdLeaveDeduction || 0,
   });
@@ -305,6 +297,24 @@ export function renderSalarySlipPdf(res, form) {
     .font('Helvetica')
     .fontSize(10)
     .text(`Amount In Words : ${amountToWords(form.netPay)}`, left, y, { width, align: 'right' });
+}
 
+export function renderSalarySlipPdf(res, form) {
+  const doc = new PDFDocument({ size: 'A4', margin: 36 });
+  doc.pipe(res);
+  drawSalarySlipPdf(doc, form);
   doc.end();
+}
+
+/** Build payslip PDF as a Buffer (for email attachments). */
+export function buildSalarySlipPdfBuffer(form) {
+  return new Promise((resolve, reject) => {
+    const doc = new PDFDocument({ size: 'A4', margin: 36 });
+    const chunks = [];
+    doc.on('data', (chunk) => chunks.push(chunk));
+    doc.on('end', () => resolve(Buffer.concat(chunks)));
+    doc.on('error', reject);
+    drawSalarySlipPdf(doc, form);
+    doc.end();
+  });
 }

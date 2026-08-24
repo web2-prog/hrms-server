@@ -5,7 +5,8 @@ import { calculateSalaryDraft, SALARY_COMPANIES, mergeSalaryDraft, toPersistedSl
 import { buildPayslipForm } from '../services/payslipForm.js';
 import { parseListQuery, listResponse } from '../utils/helpers.js';
 import { applyEmployeeListScope } from '../utils/employeeScope.js';
-import { renderSalarySlipPdf } from '../services/salarySlipPdf.js';
+import { renderSalarySlipPdf, buildSalarySlipPdfBuffer } from '../services/salarySlipPdf.js';
+import { sendSalarySlipEmail } from '../services/emailService.js';
 
 const MONTH_NAMES = [
   'January',
@@ -27,6 +28,20 @@ async function populateSlip(id) {
     path: 'employee_id',
     populate: { path: 'department_id' },
   });
+}
+
+function buildSlipPdfFilename(slip, payslip) {
+  const monthLabel = MONTH_NAMES[slip.month - 1] || slip.month;
+  const safeName = (payslip.empName || 'Employee').replace(/[^\w\s-]/g, '').trim().replace(/\s+/g, ' ');
+  const companyPrefix = payslip.companyKey === 'ondial' ? 'Ondial' : 'KriraAI';
+  return `SALARYSLIP ${companyPrefix} ${safeName} ${monthLabel} ${slip.year}.pdf`;
+}
+
+function resolveEmployeeEmail(employee) {
+  if (!employee) return '';
+  const official = String(employee.email || '').trim();
+  if (official) return official;
+  return String(employee.profile_details?.personal_email || '').trim();
 }
 
 export async function list(req, res) {
@@ -361,15 +376,65 @@ export async function downloadPdf(req, res) {
     }
 
     const payslip = await buildPayslipForm(slip.toObject());
-    const monthLabel = MONTH_NAMES[slip.month - 1] || slip.month;
-    const safeName = (payslip.empName || 'Employee').replace(/[^\w\s-]/g, '').trim().replace(/\s+/g, ' ');
-    const companyPrefix = payslip.companyKey === 'ondial' ? 'Ondial' : 'KriraAI';
-    const filename = `SALARYSLIP ${companyPrefix} ${safeName} ${monthLabel} ${slip.year}.pdf`;
+    const filename = buildSlipPdfFilename(slip, payslip);
 
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     renderSalarySlipPdf(res, payslip);
   } catch (e) {
     res.status(500).json({ message: e.message });
+  }
+}
+
+/** HR/Admin email finalized salary slip PDF to employee. */
+export async function sendSlip(req, res) {
+  try {
+    const slip = await populateSlip(req.params.id);
+    if (!slip) return res.status(404).json({ message: 'Not found' });
+    if (slip.status !== 'Finalized') {
+      return res.status(400).json({ message: 'Finalize the salary slip before sending' });
+    }
+
+    const employee = slip.employee_id;
+    const toEmail = resolveEmployeeEmail(employee);
+    if (!toEmail) {
+      return res.status(400).json({ message: 'Employee has no email address on file' });
+    }
+
+    const payslip = await buildPayslipForm(slip.toObject());
+    const filename = buildSlipPdfFilename(slip, payslip);
+    const monthLabel = MONTH_NAMES[slip.month - 1] || String(slip.month);
+    const pdfBuffer = await buildSalarySlipPdfBuffer(payslip);
+
+    const { messageId } = await sendSalarySlipEmail({
+      to: toEmail,
+      employeeName: employee?.name || payslip.empName,
+      monthLabel,
+      year: slip.year,
+      companyName: payslip.companyName,
+      netPay: payslip.netPay,
+      pdfBuffer,
+      filename,
+    });
+
+    slip.sent_on = new Date();
+    slip.sent_to = toEmail;
+    slip.sent_by = req.user._id;
+    await slip.save();
+
+    await AuditLog.create({
+      action: 'salary_send',
+      performed_by: req.user._id,
+      target_employee_id: slip.employee_id._id,
+      details: { slip_id: slip._id, month: slip.month, year: slip.year, sent_to: toEmail, messageId },
+    });
+
+    res.json({
+      message: `Salary slip sent to ${toEmail}`,
+      sent_on: slip.sent_on,
+      sent_to: slip.sent_to,
+    });
+  } catch (e) {
+    res.status(500).json({ message: e.message || 'Failed to send salary slip email' });
   }
 }
