@@ -1,7 +1,7 @@
 import Attendance from '../models/Attendance.js';
 import Employee from '../models/Employee.js';
 import EarlyCheckoutRequest from '../models/EarlyCheckoutRequest.js';
-import { parseListQuery, listResponse, todayISO, nowTime, nowYearMonth, APP_TIMEZONE, minutesBetween, normalizeTime, parseBreakMinutes, effectiveWorkStart, lateCheckInPenalty, LATE_CHECKIN_PENALTY_MINUTES, normalizePenaltyMinutes } from '../utils/helpers.js';
+import { parseListQuery, listResponse, todayISO, nowTime, nowYearMonth, APP_TIMEZONE, minutesBetween, normalizeTime, parseBreakMinutes, effectiveWorkStart, lateCheckInPenalty, autoLatePenaltyMinutes, normalizePenaltyMinutes } from '../utils/helpers.js';
 import { applyEmployeeListScope } from '../utils/employeeScope.js';
 import { getEffectiveShiftForEmployee, resolveEffectiveShift } from '../services/shift.js';
 import { recalculateAttendanceFields } from '../services/attendanceCalc.js';
@@ -120,7 +120,11 @@ export async function myToday(req, res) {
       work_start,
       late_minutes: penalty.late_minutes,
       penalty_minutes: penalty.penalty_minutes,
-      late_penalty_rule_minutes: LATE_CHECKIN_PENALTY_MINUTES,
+      late_penalty_rule_minutes: autoLatePenaltyMinutes(
+        rec.check_in,
+        shift?.shift_start,
+        shift?.late_buffer_minutes
+      ),
       late_buffer_minutes: shift?.late_buffer_minutes,
       date: rec.date,
       now: nowTime(),
@@ -552,7 +556,11 @@ export async function listToday(req, res) {
           att?.penalty_minutes_override == null ? null : Number(att.penalty_minutes_override),
         late_minutes: penalty.late_minutes,
         penalty_minutes: penalty.penalty_minutes,
-        late_penalty_rule_minutes: LATE_CHECKIN_PENALTY_MINUTES,
+        late_penalty_rule_minutes: autoLatePenaltyMinutes(
+          att?.check_in,
+          shift.shift_start,
+          shift.late_buffer_minutes
+        ),
         late_buffer_minutes: shift.late_buffer_minutes,
         shift: {
           shift_start: shift.shift_start,
@@ -672,7 +680,11 @@ export async function updateToday(req, res) {
         : null,
       late_minutes: penalty.late_minutes,
       penalty_minutes: penalty.penalty_minutes,
-      late_penalty_rule_minutes: LATE_CHECKIN_PENALTY_MINUTES,
+      late_penalty_rule_minutes: autoLatePenaltyMinutes(
+        rec.check_in,
+        shift.shift_start,
+        shift.late_buffer_minutes
+      ),
       late_buffer_minutes: shift.late_buffer_minutes,
       shift: {
         shift_start: shift.shift_start,

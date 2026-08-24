@@ -1,8 +1,9 @@
 /**
- * Set late buffer so all departments allow check-in through 09:05 (inclusive),
+ * Set late buffer so all departments allow check-in through 09:00 (inclusive),
  * then recalculate existing attendance working hours + monthly summaries.
  *
- * Rule: shift 08:45 + 20m → through 09:05:59 OK; 09:06 applies +15m penalty.
+ * Rule: shift 08:45 + 15m → through 09:00:59 OK;
+ * past buffer → penalty max(15, minutes past 09:00) e.g. 09:05→15m, 09:20→20m.
  *
  * Usage: node scripts/setLateBuffer0905.js
  */
@@ -183,13 +184,19 @@ async function main() {
     console.log('Sample recalcs:', JSON.stringify(samples, null, 2));
   }
 
-  // Quick sanity: 09:05 OK, 09:06 late for 08:45 / 20m
-  const ok905 = lateCheckInPenalty('09:05:00', '08:45', false, 20);
-  const late906 = lateCheckInPenalty('09:06:00', '08:45', false, 20);
-  console.log('Sanity 09:05 →', ok905);
-  console.log('Sanity 09:06 →', late906);
-  if (ok905.late || !late906.late || late906.penalty_minutes !== 15) {
-    throw new Error('Buffer rule sanity check failed');
+  // Quick sanity: buffer through 09:00; escalating penalty after
+  const cases = [
+    ['08:49:00', false, 0],
+    ['09:00:00', false, 0],
+    ['09:05:00', true, 15],
+    ['09:20:00', true, 20],
+  ];
+  for (const [checkIn, expectLate, expectPenalty] of cases) {
+    const r = lateCheckInPenalty(checkIn, '08:45', false, 15);
+    console.log(`Sanity ${checkIn} → late=${r.late} penalty=${r.penalty_minutes}`);
+    if (r.late !== expectLate || r.penalty_minutes !== expectPenalty) {
+      throw new Error(`Buffer rule sanity check failed for ${checkIn}`);
+    }
   }
 
   await mongoose.disconnect();

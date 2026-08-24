@@ -9,10 +9,10 @@ import Holiday from '../models/Holiday.js';
 dotenv.config();
 
 const depts = [
-  { name: 'AI', working_hours_per_day: 8.25, shift_start: '08:45', shift_end: '17:30', late_buffer_minutes: 20, status: 'active' },
-  { name: 'Web', working_hours_per_day: 8.25, shift_start: '08:45', shift_end: '17:30', late_buffer_minutes: 20, status: 'active' },
-  { name: 'SEO', working_hours_per_day: 8.25, shift_start: '08:45', shift_end: '17:30', late_buffer_minutes: 20, status: 'active' },
-  { name: 'Sales', working_hours_per_day: 8.25, shift_start: '08:45', shift_end: '17:30', late_buffer_minutes: 20, status: 'active' },
+  { name: 'AI', working_hours_per_day: 8.25, shift_start: '08:45', shift_end: '17:30', late_buffer_minutes: 15, status: 'active' },
+  { name: 'Web', working_hours_per_day: 8.25, shift_start: '08:45', shift_end: '17:30', late_buffer_minutes: 15, status: 'active' },
+  { name: 'SEO', working_hours_per_day: 8.25, shift_start: '08:45', shift_end: '17:30', late_buffer_minutes: 15, status: 'active' },
+  { name: 'Sales', working_hours_per_day: 8.25, shift_start: '08:45', shift_end: '17:30', late_buffer_minutes: 15, status: 'active' },
 ];
 
 /** Official 2026 Alternate Saturday Off dates */

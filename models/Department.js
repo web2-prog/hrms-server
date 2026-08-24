@@ -8,11 +8,12 @@ const departmentSchema = new mongoose.Schema(
     half_day_hours: { type: Number, default: null },
     shift_start: { type: String, required: true }, // "09:30"
     shift_end: { type: String, required: true },
-    // Grace period after shift start. The cutoff minute is inclusive:
-    // 08:45 + 20 minutes permits check-in through 09:05:59; 09:06 starts the penalty.
+    // Grace after shift start. Cutoff minute is inclusive:
+    // 08:45 + 15 minutes permits check-in through 09:00:59.
+    // From 09:01 penalty is max(15, minutes past buffer end).
     late_buffer_minutes: {
       type: Number,
-      default: 20,
+      default: 15,
       min: 0,
       max: 240,
       validate: {

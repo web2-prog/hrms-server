@@ -84,15 +84,16 @@ export function addMinutesToTime(t, mins) {
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
 
-/** Fixed late check-in penalty (minutes). Work counted from check-in + this when late. */
+/** Minimum late check-in penalty (minutes) once past the department buffer. */
 export const LATE_CHECKIN_PENALTY_MINUTES = 15;
 /**
- * Default grace after shift start. With company shift 08:45 this is through 09:05
- * (inclusive of that minute); 09:06 applies the late penalty.
+ * Default grace after shift start. With company shift 08:45 this is through 09:00
+ * (inclusive of that minute). From 09:01 penalty is at least 15m, then +1m per
+ * minute past the buffer end (09:05 → 15m, 09:20 → 20m).
  */
-export const DEFAULT_LATE_BUFFER_MINUTES = 20;
+export const DEFAULT_LATE_BUFFER_MINUTES = 15;
 /** Company-wide default late-until clock (used when seeding / backfilling). */
-export const DEFAULT_LATE_BUFFER_UNTIL = '09:05';
+export const DEFAULT_LATE_BUFFER_UNTIL = '09:00';
 
 export function normalizeLateBufferMinutes(value) {
   const minutes = Number(value);
@@ -102,8 +103,8 @@ export function normalizeLateBufferMinutes(value) {
 
 /**
  * The department buffer is inclusive to the whole cutoff minute.
- * Example: 08:45 shift + 20m buffer permits check-in through 09:05:59;
- * 09:06:00 and later is late.
+ * Example: 08:45 shift + 15m buffer permits check-in through 09:00:59;
+ * 09:01:00 and later is late.
  */
 export function isLateCheckIn(checkIn, shiftStart, bufferMinutes = DEFAULT_LATE_BUFFER_MINUTES) {
   if (!checkIn || !shiftStart) return false;
@@ -128,8 +129,36 @@ export function lateBufferMinutesFromUntil(shiftStart, untilClock) {
   return Math.max(0, Math.min(240, mins));
 }
 
-/** Clamp HR/admin penalty override to whole minutes (0–480). */
+/**
+ * Whole minutes past the buffer-end clock (shift start + buffer).
+ * Example: buffer ends 09:00 → 09:05 returns 5, 09:20 returns 20.
+ * Returns 0 when still inside the buffer (including the buffer-end minute).
+ */
+export function minutesPastLateBuffer(checkIn, shiftStart, bufferMinutes = DEFAULT_LATE_BUFFER_MINUTES) {
+  if (!checkIn || !shiftStart) return 0;
+  const checkInSeconds = timeToSeconds(checkIn);
+  const shiftSeconds = timeToSeconds(shiftStart);
+  if (checkInSeconds == null || shiftSeconds == null) return 0;
+  const bufferEndSeconds = shiftSeconds + normalizeLateBufferMinutes(bufferMinutes) * 60;
+  if (checkInSeconds <= bufferEndSeconds + 59) return 0; // through buffer-end minute
+  return Math.floor((checkInSeconds - bufferEndSeconds) / 60);
+}
+
+/**
+ * Automatic late penalty after buffer:
+ * - within buffer → 0
+ * - past buffer → max(15, minutes past buffer end)
+ * so the first late stretch is 15m, then grows 1:1 with minutes past buffer.
+ */
+export function autoLatePenaltyMinutes(checkIn, shiftStart, bufferMinutes = DEFAULT_LATE_BUFFER_MINUTES) {
+  if (!isLateCheckIn(checkIn, shiftStart, bufferMinutes)) return 0;
+  const past = minutesPastLateBuffer(checkIn, shiftStart, bufferMinutes);
+  return Math.max(LATE_CHECKIN_PENALTY_MINUTES, past);
+}
+
+/** Clamp HR/admin penalty override to whole minutes (0–480). null/undefined = no override. */
 export function normalizePenaltyMinutes(value) {
+  if (value == null || value === '') return null;
   const minutes = Number(value);
   if (!Number.isFinite(minutes)) return null;
   return Math.max(0, Math.min(480, Math.floor(minutes)));
@@ -137,12 +166,19 @@ export function normalizePenaltyMinutes(value) {
 
 /**
  * Effective late-check-in penalty minutes for a day.
- * Waive wins; otherwise HR override; otherwise the fixed default rule.
+ * Waive wins; otherwise HR override; otherwise auto rule (min 15, then +1/min past buffer).
  */
-export function resolvePenaltyMinutes(penaltyWaived = false, overrideMinutes = null) {
+export function resolvePenaltyMinutes(
+  penaltyWaived = false,
+  overrideMinutes = null,
+  checkIn = null,
+  shiftStart = null,
+  bufferMinutes = DEFAULT_LATE_BUFFER_MINUTES
+) {
   if (penaltyWaived) return 0;
   const override = normalizePenaltyMinutes(overrideMinutes);
   if (override != null) return override;
+  if (checkIn && shiftStart) return autoLatePenaltyMinutes(checkIn, shiftStart, bufferMinutes);
   return LATE_CHECKIN_PENALTY_MINUTES;
 }
 
@@ -158,7 +194,13 @@ export function effectiveWorkStart(
 ) {
   if (!checkIn) return null;
   if (isLateCheckIn(checkIn, shiftStart, bufferMinutes)) {
-    const mins = resolvePenaltyMinutes(penaltyWaived, penaltyMinutesOverride);
+    const mins = resolvePenaltyMinutes(
+      penaltyWaived,
+      penaltyMinutesOverride,
+      checkIn,
+      shiftStart,
+      bufferMinutes
+    );
     if (mins > 0) return addMinutesToTime(checkIn, mins);
   }
   return normalizeTime(checkIn) || checkIn;
@@ -173,14 +215,28 @@ export function lateCheckInPenalty(
 ) {
   const normalizedBuffer = normalizeLateBufferMinutes(bufferMinutes);
   if (!isLateCheckIn(checkIn, shiftStart, normalizedBuffer)) {
-    return { late: false, late_minutes: 0, penalty_minutes: 0, buffer_minutes: normalizedBuffer };
+    return {
+      late: false,
+      late_minutes: 0,
+      penalty_minutes: 0,
+      buffer_minutes: normalizedBuffer,
+      minutes_past_buffer: 0,
+    };
   }
   const late_minutes = Math.round(minutesBetween(shiftStart, checkIn) * 100) / 100;
+  const minutes_past_buffer = minutesPastLateBuffer(checkIn, shiftStart, normalizedBuffer);
   return {
     late: true,
     late_minutes,
-    penalty_minutes: resolvePenaltyMinutes(penaltyWaived, penaltyMinutesOverride),
+    penalty_minutes: resolvePenaltyMinutes(
+      penaltyWaived,
+      penaltyMinutesOverride,
+      checkIn,
+      shiftStart,
+      normalizedBuffer
+    ),
     buffer_minutes: normalizedBuffer,
+    minutes_past_buffer,
   };
 }
 
