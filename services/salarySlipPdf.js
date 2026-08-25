@@ -136,26 +136,33 @@ function drawSalarySlipPdf(doc, form) {
 
   const cardX = left + width - 170;
   const cardY = y;
-  doc.roundedRect(cardX, cardY, 170, 108, 4).strokeColor('#d5d5d5').stroke();
-  doc.rect(cardX, cardY, 170, 52).fill('#e6f4ea');
+  const cardH = 122;
+  doc.roundedRect(cardX, cardY, 170, cardH, 4).strokeColor('#d5d5d5').stroke();
+  doc.rect(cardX, cardY, 170, 52).fill('#dbeafe');
   doc
     .fillColor('#1a1a1a')
     .font('Helvetica-Bold')
     .fontSize(14)
     .text(inr(form.netPay), cardX, cardY + 12, { width: 170, align: 'center' });
   doc
-    .fillColor('#089949')
+    .fillColor('#1d4ed8')
     .font('Helvetica')
     .fontSize(9)
     .text('Employee Net Pay', cardX, cardY + 32, { width: 170, align: 'center' });
   doc
     .fillColor('#888888')
-    .fontSize(9)
-    .text(`Paid Days      ${form.paidDays ?? 0}`, cardX + 12, cardY + 58, { width: 146 });
-  doc.text(`Leave Count   ${form.leaveDays ?? 0}`, cardX + 12, cardY + 72, { width: 146 });
-  doc.text(`LOP Days       ${form.lopDays ?? 0}`, cardX + 12, cardY + 86, { width: 146 });
+    .fontSize(8)
+    .text(`Paid Days                 ${form.paidDays ?? 0}`, cardX + 10, cardY + 58, { width: 150 });
+  doc.text(`Total Approved Leave   ${form.leaveDays ?? 0}`, cardX + 10, cardY + 70, { width: 150 });
+  doc.text(`Leave Deduction Days  ${form.lopDays ?? 0}`, cardX + 10, cardY + 82, { width: 150 });
+  doc.text(
+    `Early Checkout          ${Math.round(Number(form.earlyCheckoutMinutes) || 0)} min`,
+    cardX + 10,
+    cardY + 94,
+    { width: 150 }
+  );
 
-  y = Math.max(dy, cardY + 120);
+  y = Math.max(dy, cardY + cardH + 12);
   doc.moveTo(left, y).lineTo(right, y).strokeColor('#e8e8e8').stroke();
   y += 12;
 
@@ -217,7 +224,7 @@ function drawSalarySlipPdf(doc, form) {
     });
   }
   deductions.push({
-    label: 'Leave Deduction',
+    label: `Leave Deduction (${Number(form.lopDays) || 0} LOP day${Number(form.lopDays) === 1 ? '' : 's'})`,
     amount: form.leaveDeduction || 0,
     ytd: form.ytdLeaveDeduction || 0,
   });

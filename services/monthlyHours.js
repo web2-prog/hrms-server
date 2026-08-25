@@ -2,10 +2,23 @@ import Attendance from '../models/Attendance.js';
 import Leave from '../models/Leave.js';
 import MonthlySummary from '../models/MonthlySummary.js';
 import OvertimeRequest from '../models/OvertimeRequest.js';
+import CoverTimeRequest from '../models/CoverTimeRequest.js';
 import { getWorkingDaysInMonth } from './workingDays.js';
 import { defaultHalfDayHours, getEffectiveShiftForEmployee } from './shift.js';
 import { recalculateAttendanceFields } from './attendanceCalc.js';
 import { datesInRange } from '../utils/helpers.js';
+
+/** Month-end Salary Deduction / Carry Forward management starts 1 Aug 2026. */
+export const SHORTFALL_MANAGEMENT_START = { year: 2026, month: 8 };
+
+export function isShortfallManagementActive(month, year) {
+  const m = Number(month);
+  const y = Number(year);
+  if (!Number.isFinite(m) || !Number.isFinite(y)) return false;
+  if (y > SHORTFALL_MANAGEMENT_START.year) return true;
+  if (y < SHORTFALL_MANAGEMENT_START.year) return false;
+  return m >= SHORTFALL_MANAGEMENT_START.month;
+}
 
 export function previousMonthYear(month, year) {
   if (month === 1) return { month: 12, year: year - 1 };
@@ -18,7 +31,13 @@ export function nextMonthYear(month, year) {
 }
 
 async function getCarriedForwardHours(employeeId, month, year) {
+  // Carry-forward into this month only after shortfall management is active,
+  // and only from a previous month that itself is in the management window.
+  if (!isShortfallManagementActive(month, year)) return 0;
+
   const prev = previousMonthYear(month, year);
+  if (!isShortfallManagementActive(prev.month, prev.year)) return 0;
+
   const prevSummary = await MonthlySummary.findOne({
     employee_id: employeeId,
     month: prev.month,
@@ -103,6 +122,36 @@ export async function recalculateMonthlySummary(employeeId, month, year) {
     if (r.check_out && actual < threshold) low_hours_from_checkout += threshold - actual;
   }
 
+  // Approved cover time counts toward monthly working hours (fills shortfall) and
+  // is excluded from attendance OT for the same day.
+  const coverRequests = await CoverTimeRequest.find({
+    employee_id: employeeId,
+    status: 'Approved',
+    date: { $regex: `^${monthPrefix}` },
+  }).lean();
+
+  let cover_time_hours = 0;
+  const coverByDate = new Map();
+  for (const req of coverRequests) {
+    const hrs = Math.max(0, Number(req.actual_cover_hours) || Number(req.requested_hours) || 0);
+    if (hrs <= 0) continue;
+    cover_time_hours += hrs;
+    coverByDate.set(req.date, (coverByDate.get(req.date) || 0) + hrs);
+  }
+  monthly_counted_hours += cover_time_hours;
+
+  if (coverByDate.size) {
+    let adjustedOt = 0;
+    for (const r of records) {
+      if (r.auto_checkout) continue;
+      const actual = r.working_hours || 0;
+      if (actual <= threshold) continue;
+      const cover = coverByDate.get(r.date) || 0;
+      adjustedOt += Math.max(0, actual - threshold - cover);
+    }
+    attendance_ot_hours = adjustedOt;
+  }
+
   const otRequests = await OvertimeRequest.find({
     employee_id: employeeId,
     status: 'Approved',
@@ -140,6 +189,7 @@ export async function recalculateMonthlySummary(employeeId, month, year) {
     attendance_ot_hours: Math.round(attendance_ot_hours * 10000) / 10000,
     overtime_hours: Math.round(overtime_hours * 10000) / 10000,
     management_ot_hours: Math.round(management_ot_hours * 10000) / 10000,
+    cover_time_hours: Math.round(cover_time_hours * 10000) / 10000,
     low_hours,
   };
 
@@ -168,6 +218,12 @@ export async function recalculateForDate(employeeId, dateStr) {
  * Apply month-end shortfall decision and refresh next month target if needed.
  */
 export async function applyShortfallDecision(employeeId, month, year, action, decidedBy) {
+  if (!isShortfallManagementActive(month, year)) {
+    throw new Error(
+      'Salary Deduction / Carry Forward starts from August 2026. Earlier months are not managed this way.'
+    );
+  }
+
   const summary = await recalculateMonthlySummary(employeeId, month, year);
   if (!summary) throw new Error('Could not calculate monthly summary');
 

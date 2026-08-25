@@ -1,6 +1,7 @@
 import Attendance from '../models/Attendance.js';
 import Leave from '../models/Leave.js';
 import OvertimeRequest from '../models/OvertimeRequest.js';
+import CoverTimeRequest from '../models/CoverTimeRequest.js';
 import SalarySlip from '../models/SalarySlip.js';
 import MonthlySummary from '../models/MonthlySummary.js';
 import AuditLog from '../models/AuditLog.js';
@@ -18,6 +19,7 @@ export async function clearEmployeeData({ employeeId, start, end, performedBy })
     ],
   });
   const overtime = await OvertimeRequest.deleteMany({ employee_id: employeeId, date: dateFilter });
+  const coverTime = await CoverTimeRequest.deleteMany({ employee_id: employeeId, date: dateFilter });
 
   const startY = parseInt(start.slice(0, 4), 10);
   const startM = parseInt(start.slice(5, 7), 10);
@@ -50,6 +52,7 @@ export async function clearEmployeeData({ employeeId, start, end, performedBy })
       attendance_deleted: att.deletedCount,
       leaves_deleted: leaves.deletedCount,
       overtime_deleted: overtime.deletedCount,
+      cover_time_deleted: coverTime.deletedCount,
       salary_slips_deleted: slips.deletedCount,
       monthly_summary_deleted: summaries.deletedCount,
     },
@@ -60,6 +63,7 @@ export async function clearEmployeeData({ employeeId, start, end, performedBy })
     attendance_deleted: att.deletedCount,
     leaves_deleted: leaves.deletedCount,
     overtime_deleted: overtime.deletedCount,
+    cover_time_deleted: coverTime.deletedCount,
     salary_slips_deleted: slips.deletedCount,
     monthly_summary_deleted: summaries.deletedCount,
   };

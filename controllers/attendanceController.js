@@ -1,6 +1,7 @@
 import Attendance from '../models/Attendance.js';
 import Employee from '../models/Employee.js';
 import EarlyCheckoutRequest from '../models/EarlyCheckoutRequest.js';
+import CoverTimeRequest, { MIN_COVER_HOURS } from '../models/CoverTimeRequest.js';
 import { parseListQuery, listResponse, todayISO, nowTime, nowYearMonth, APP_TIMEZONE, minutesBetween, normalizeTime, parseBreakMinutes, effectiveWorkStart, lateCheckInPenalty, autoLatePenaltyMinutes, normalizePenaltyMinutes } from '../utils/helpers.js';
 import { applyEmployeeListScope } from '../utils/employeeScope.js';
 import { getEffectiveShiftForEmployee, resolveEffectiveShift } from '../services/shift.js';
@@ -8,6 +9,16 @@ import { recalculateAttendanceFields } from '../services/attendanceCalc.js';
 import { recalculateForDate, recalculateMonthlySummary } from '../services/monthlyHours.js';
 import { closeStaleOpenSessions, isAtOrAfterAutoCheckout } from '../services/autoCheckout.js';
 import AuditLog from '../models/AuditLog.js';
+
+function roundHours(h) {
+  return Math.round(Number(h || 0) * 10000) / 10000;
+}
+
+/** Hours worked past the daily target (cover / OT window). */
+function hoursPastDailyTarget(rec, threshold, now, shiftStart, lateBufferMinutes) {
+  const workHours = liveWorkMinutes(rec, now, shiftStart, lateBufferMinutes) / 60;
+  return Math.max(0, workHours - Number(threshold || 0));
+}
 
 function liveBreakMinutes(rec, now) {
   let breakMins = Number(rec.break_total || 0);
@@ -91,8 +102,12 @@ export async function myToday(req, res) {
     const shift = await getEffectiveShiftForEmployee(req.user._id);
     const { month, year } = nowYearMonth();
     const summary = await recalculateMonthlySummary(req.user._id, month, year);
-    // Latest early-checkout request for today (if any) so the dashboard can show pending/decided state.
+    // Latest early-checkout / cover-time requests for today (if any) so the dashboard can show state.
     const early_checkout_request = await EarlyCheckoutRequest.findOne({
+      employee_id: req.user._id,
+      date: todayISO(),
+    }).sort({ createdAt: -1 });
+    const cover_time_request = await CoverTimeRequest.findOne({
       employee_id: req.user._id,
       date: todayISO(),
     }).sort({ createdAt: -1 });
@@ -117,6 +132,8 @@ export async function myToday(req, res) {
       shift,
       monthly_summary: summary,
       early_checkout_request,
+      cover_time_request,
+      cover_time_min_hours: MIN_COVER_HOURS,
       work_start,
       late_minutes: penalty.late_minutes,
       penalty_minutes: penalty.penalty_minutes,
@@ -199,15 +216,34 @@ export async function checkOut(req, res) {
       if (rec.auto_checkout) return res.json(rec);
       return res.status(400).json({ message: 'Already checked out' });
     }
+    const shift = await getEffectiveShiftForEmployee(req.user._id);
+    const threshold = Number(shift.working_hours_per_day || 8.25);
+    const now = nowTime();
+
+    // Active cover-time request: employee must stay at least 45m past daily hours before checkout.
+    const activeCover = await CoverTimeRequest.findOne({
+      employee_id: req.user._id,
+      date: rec.date,
+      status: { $in: ['Pending', 'Approved'] },
+    }).sort({ createdAt: -1 });
+    if (activeCover) {
+      const past = hoursPastDailyTarget(rec, threshold, now, shift.shift_start, shift.late_buffer_minutes);
+      if (past + 1 / 120 < MIN_COVER_HOURS) {
+        const needMin = Math.ceil((MIN_COVER_HOURS - past) * 60);
+        return res.status(400).json({
+          message: `Cover time requires at least 45 minutes past daily hours. Stay about ${needMin} more minute(s) before checkout.`,
+        });
+      }
+    }
+
     if (rec.break_started_at) {
-      const mins = minutesBetween(rec.break_started_at, nowTime());
+      const mins = minutesBetween(rec.break_started_at, now);
       rec.break_total = Number(((rec.break_total || 0) + Math.max(0, mins)).toFixed(4));
       rec.break_started_at = null;
     }
-    rec.check_out = nowTime();
+    rec.check_out = now;
     rec.auto_checkout = false;
-    const shift = await getEffectiveShiftForEmployee(req.user._id);
-    const fields = recalculateAttendanceFields(rec, shift.working_hours_per_day, shift.shift_start, shift.late_buffer_minutes);
+    const fields = recalculateAttendanceFields(rec, threshold, shift.shift_start, shift.late_buffer_minutes);
     Object.assign(rec, fields);
     await rec.save();
     await recalculateForDate(req.user._id, rec.date);
@@ -223,6 +259,15 @@ export async function checkOut(req, res) {
         },
       }
     );
+
+    // Lock in actual cover hours from what was worked past the daily target.
+    if (activeCover && ['Pending', 'Approved'].includes(activeCover.status)) {
+      const excess = Math.max(0, Number(rec.working_hours || 0) - threshold);
+      activeCover.actual_cover_hours = roundHours(Math.min(Number(activeCover.requested_hours) || 0, excess));
+      await activeCover.save();
+      await recalculateForDate(req.user._id, rec.date);
+    }
+
     await AuditLog.create({
       action: 'check_out',
       performed_by: req.user._id,
@@ -233,6 +278,7 @@ export async function checkOut(req, res) {
         check_out: rec.check_out,
         status: rec.status,
         working_hours: rec.working_hours,
+        cover_hours: activeCover?.actual_cover_hours || 0,
       },
     });
     res.json(rec);
@@ -386,6 +432,213 @@ export async function cancelEarlyCheckoutRequest(req, res) {
       performed_by: req.user._id,
       target_employee_id: req.user._id,
       details: { date: request.date, requested_time: request.requested_time },
+    });
+    res.json(request);
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+}
+
+/* ── Cover time request workflow ─────────────────────────────────── */
+
+export async function createCoverTimeRequest(req, res) {
+  try {
+    await closeStaleOpenSessions({ employeeId: req.user._id });
+    const rec = await getOrCreateToday(req.user._id);
+    if (!rec.check_in) return res.status(400).json({ message: 'Not checked in' });
+    if (rec.check_out) return res.status(400).json({ message: 'Already checked out' });
+
+    const shift = await getEffectiveShiftForEmployee(req.user._id);
+    const threshold = Number(shift.working_hours_per_day || 8.25);
+    const now = nowTime();
+    const workHours = liveWorkMinutes(rec, now, shift.shift_start, shift.late_buffer_minutes) / 60;
+    if (workHours + 1 / 120 < threshold) {
+      return res.status(400).json({
+        message: `Cover time can only be requested after completing daily working hours (${threshold}h).`,
+      });
+    }
+
+    const existing = await CoverTimeRequest.findOne({
+      employee_id: req.user._id,
+      date: todayISO(),
+      status: { $in: ['Pending', 'Approved'] },
+    });
+    if (existing) {
+      return res.status(400).json({ message: 'A cover time request is already active for today' });
+    }
+
+    const hrs = Number(req.body.hours ?? req.body.requested_hours);
+    if (!Number.isFinite(hrs) || hrs < MIN_COVER_HOURS) {
+      return res.status(400).json({
+        message: `Cover time must be at least ${MIN_COVER_HOURS * 60} minutes (0.75h)`,
+      });
+    }
+    if (hrs > 12) return res.status(400).json({ message: 'Cover time cannot exceed 12 hours' });
+
+    const reason = String(req.body.reason || '').trim();
+    if (!reason) return res.status(400).json({ message: 'Reason is required' });
+
+    const { month, year } = nowYearMonth();
+    const summary = await recalculateMonthlySummary(req.user._id, month, year);
+    const pending = Number(summary?.pending_hours || 0);
+    if (pending < MIN_COVER_HOURS - 0.001) {
+      return res.status(400).json({
+        message: 'No monthly shortfall hours to cover. Cover time is only for making up pending working hours.',
+      });
+    }
+    if (hrs > pending + 0.01) {
+      return res.status(400).json({
+        message: `You can cover at most ${roundHours(pending)}h (your current monthly shortfall).`,
+      });
+    }
+
+    const request = await CoverTimeRequest.create({
+      employee_id: req.user._id,
+      attendance_id: rec._id,
+      date: todayISO(),
+      requested_hours: roundHours(hrs),
+      reason,
+      status: 'Pending',
+    });
+    await AuditLog.create({
+      action: 'cover_time_requested',
+      performed_by: req.user._id,
+      target_employee_id: req.user._id,
+      details: { date: request.date, requested_hours: request.requested_hours, reason },
+    });
+    res.status(201).json(request);
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+}
+
+export async function listCoverTimeRequests(req, res) {
+  try {
+    const { page, limit, skip } = parseListQuery(req.query);
+    const filter = {};
+    if (req.user.role === 'employee') {
+      filter.employee_id = req.user._id;
+    } else if (req.query.employee_id) {
+      filter.employee_id = req.query.employee_id;
+    }
+    if (req.query.status) filter.status = req.query.status;
+    if (req.query.date) {
+      filter.date = req.query.date;
+    } else if (req.query.month && req.query.year) {
+      const m = String(req.query.month).padStart(2, '0');
+      filter.date = { $regex: `^${req.query.year}-${m}` };
+    } else if (req.query.year) {
+      filter.date = { $regex: `^${req.query.year}` };
+    } else if (req.query.from || req.query.to) {
+      filter.date = {};
+      if (req.query.from) filter.date.$gte = req.query.from;
+      if (req.query.to) filter.date.$lte = req.query.to;
+    }
+    const [data, total] = await Promise.all([
+      CoverTimeRequest.find(filter)
+        .populate({ path: 'employee_id', populate: { path: 'department_id' } })
+        .populate('decided_by', 'name')
+        .sort({ date: -1, createdAt: -1 })
+        .skip(skip)
+        .limit(limit),
+      CoverTimeRequest.countDocuments(filter),
+    ]);
+    res.json(listResponse(data, total, page, limit));
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+}
+
+export async function decideCoverTimeRequest(req, res) {
+  try {
+    const request = await CoverTimeRequest.findById(req.params.id);
+    if (!request) return res.status(404).json({ message: 'Request not found' });
+    if (request.status !== 'Pending') {
+      return res.status(400).json({ message: `Request already ${request.status.toLowerCase()}` });
+    }
+    const decision = req.body.status;
+    if (decision !== 'Approved' && decision !== 'Rejected') {
+      return res.status(400).json({ message: 'status must be Approved or Rejected' });
+    }
+    if (String(request.employee_id) === String(req.user._id)) {
+      return res.status(400).json({ message: 'You cannot decide your own cover time request' });
+    }
+
+    // Prefer actual hours from checkout; if still open, use live excess capped at requested.
+    const rec = await Attendance.findById(request.attendance_id);
+    const shift = await getEffectiveShiftForEmployee(request.employee_id);
+    const threshold = Number(shift?.working_hours_per_day || 8.25);
+    let actual = Number(request.actual_cover_hours || 0);
+    if (rec?.check_out) {
+      const excess = Math.max(0, Number(rec.working_hours || 0) - threshold);
+      actual = roundHours(Math.min(Number(request.requested_hours) || 0, excess));
+    } else if (rec?.check_in) {
+      const past = hoursPastDailyTarget(
+        rec,
+        threshold,
+        nowTime(),
+        shift.shift_start,
+        shift.late_buffer_minutes
+      );
+      actual = roundHours(Math.min(Number(request.requested_hours) || 0, past));
+    }
+
+    if (decision === 'Approved' && actual + 0.001 < MIN_COVER_HOURS) {
+      return res.status(400).json({
+        message: 'Cannot approve: employee has not completed at least 45 minutes of cover time yet.',
+      });
+    }
+
+    request.status = decision;
+    request.actual_cover_hours = decision === 'Approved' ? actual : 0;
+    request.decided_by = req.user._id;
+    request.decided_at = new Date();
+    request.decision_note = String(req.body.note || '').trim();
+    await request.save();
+    await recalculateForDate(request.employee_id, request.date);
+
+    await AuditLog.create({
+      action: `cover_time_${decision === 'Approved' ? 'approved' : 'rejected'}`,
+      performed_by: req.user._id,
+      target_employee_id: request.employee_id,
+      details: {
+        date: request.date,
+        requested_hours: request.requested_hours,
+        actual_cover_hours: request.actual_cover_hours,
+        note: request.decision_note,
+      },
+    });
+    const populated = await CoverTimeRequest.findById(request._id)
+      .populate({ path: 'employee_id', populate: { path: 'department_id' } })
+      .populate('decided_by', 'name');
+    res.json(populated);
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+}
+
+export async function cancelCoverTimeRequest(req, res) {
+  try {
+    const request = await CoverTimeRequest.findById(req.params.id);
+    if (!request) return res.status(404).json({ message: 'Request not found' });
+    if (request.status !== 'Pending') {
+      return res.status(400).json({ message: `Request already ${request.status.toLowerCase()}` });
+    }
+    if (String(request.employee_id) !== String(req.user._id)) {
+      return res.status(403).json({ message: 'Forbidden' });
+    }
+    request.status = 'Cancelled';
+    request.actual_cover_hours = 0;
+    request.decided_by = req.user._id;
+    request.decided_at = new Date();
+    request.decision_note = 'Cancelled by employee';
+    await request.save();
+    await recalculateForDate(request.employee_id, request.date);
+    await AuditLog.create({
+      action: 'cover_time_cancelled',
+      performed_by: req.user._id,
+      target_employee_id: req.user._id,
+      details: { date: request.date, requested_hours: request.requested_hours },
     });
     res.json(request);
   } catch (e) {

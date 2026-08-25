@@ -1,5 +1,6 @@
 import Attendance from '../models/Attendance.js';
 import EarlyCheckoutRequest from '../models/EarlyCheckoutRequest.js';
+import CoverTimeRequest from '../models/CoverTimeRequest.js';
 import { todayISO, nowTime, minutesBetween, timeToSeconds } from '../utils/helpers.js';
 import { getEffectiveShiftForEmployee } from './shift.js';
 import { recalculateAttendanceFields } from './attendanceCalc.js';
@@ -58,6 +59,22 @@ async function applyAutoCheckout(rec) {
       },
     }
   );
+
+  // Capture cover hours from auto-checkout day (HR can still approve/reject).
+  const activeCover = await CoverTimeRequest.findOne({
+    employee_id: rec.employee_id,
+    date: rec.date,
+    status: { $in: ['Pending', 'Approved'] },
+  }).sort({ createdAt: -1 });
+  if (activeCover) {
+    const threshold = Number(shift?.working_hours_per_day ?? 8.25);
+    const excess = Math.max(0, Number(rec.working_hours || 0) - threshold);
+    const actual = Math.round(Math.min(Number(activeCover.requested_hours) || 0, excess) * 10000) / 10000;
+    activeCover.actual_cover_hours = actual;
+    await activeCover.save();
+    await recalculateForDate(rec.employee_id, rec.date);
+  }
+
   return rec;
 }
 

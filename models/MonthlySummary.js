@@ -20,6 +20,8 @@ const schema = new mongoose.Schema(
     overtime_hours: { type: Number, default: 0 },
     attendance_ot_hours: { type: Number, default: 0 },
     management_ot_hours: { type: Number, default: 0 },
+    /** Approved cover-time hours counted toward monthly working hours (not OT). */
+    cover_time_hours: { type: Number, default: 0 },
     low_hours: { type: Number, default: 0 },
     /**
      * Month-end decision for pending hours:
