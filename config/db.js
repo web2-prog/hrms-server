@@ -1,142 +1,104 @@
 import dns from 'dns';
+import os from 'os';
 import mongoose from 'mongoose';
 import dotenv from 'dotenv';
 
 dotenv.config();
 
 const PUBLIC_DNS = ['8.8.8.8', '1.1.1.1'];
+const CONNECTED = 1;
+const DISCONNECTED = 0;
 
-/**
- * Point Node's DNS at public resolvers so Atlas SRV lookups
- * (_mongodb._tcp.<cluster>.mongodb.net) succeed even when the host's
- * default resolver refuses SRV queries (querySrv ECONNREFUSED — common on
- * Windows/routers and some serverless runtimes).
- *
- * Local dev applies this up front; on Vercel it is only used as a retry
- * fallback after the provider resolver fails, because forcing public
- * resolvers as the default can stall the lookup on AWS-managed DNS.
- */
-function forcePublicResolvers() {
+let connecting = null;
+
+/** Prefer IPv4 + optional public DNS for Atlas SRV (Windows / explicit opt-in only). */
+function preferReliableDns() {
+  const force = process.env.MONGODB_FORCE_PUBLIC_DNS === '1';
+  const onWindows = os.platform() === 'win32' && !process.env.VERCEL;
+  if (!force && !onWindows) return;
+
   try {
-    const current = dns.getServers();
-    const needsPublic = !current.some((s) => PUBLIC_DNS.includes(s));
-    if (needsPublic) {
-      dns.setServers([...PUBLIC_DNS, ...current]);
+    const servers = dns.getServers();
+    if (!PUBLIC_DNS.every((s) => servers.includes(s))) {
+      dns.setServers([...PUBLIC_DNS, ...servers]);
     }
     dns.setDefaultResultOrder('ipv4first');
-    return true;
   } catch {
-    return false; // connect() will surface a real error if DNS still fails
+    // Host DNS stays as-is; mongoose will surface the real failure.
   }
 }
 
-/** True when the connection error is a DNS/SRV resolution failure worth retrying. */
-function isSrvDnsFailure(err) {
-  const msg = String((err && (err.message || (err.cause && err.cause.message))) || '');
-  return /querySrv|getaddrinfo|ENOTFOUND|EAI_AGAIN/i.test(msg);
-}
-
-let connectionPromise = null;
-
-function connect() {
-  const uri = process.env.MONGODB_URI;
-  const dbName = process.env.MONGODB_DB_NAME || 'NewHRMS';
-  if (!uri) throw new Error('MONGODB_URI is required');
-
-  const options = {
+function connectOptions(dbName) {
+  const prod = process.env.NODE_ENV === 'production';
+  return {
     dbName,
-    // Never silently buffer model operations for the default 10s — fail
-    // fast with a real error instead of "buffering timed out".
     bufferCommands: false,
-    // Bound the handshake so a cold start returns a clear 503 in time
-    // rather than hanging until the serverless function is killed.
-    serverSelectionTimeoutMS: 10000,
-    connectTimeoutMS: 10000,
-    socketTimeoutMS: 60000,
-    // Atlas is reachable over IPv4; forcing it avoids dual-stack stalls
-    // on Lambda.
+    serverSelectionTimeoutMS: prod ? 30_000 : 10_000,
+    connectTimeoutMS: prod ? 30_000 : 10_000,
+    socketTimeoutMS: 60_000,
+    maxPoolSize: prod ? 20 : 10,
+    retryWrites: true,
     family: 4,
   };
-
-  const useSrv = uri.startsWith('mongodb+srv://');
-  // Local dev: prefer public resolvers up front. On Vercel keep the
-  // provider resolver for the first attempt (AWS DNS handles SRV records
-  // natively) and fall back to public resolvers only if that fails.
-  if (useSrv && !process.env.VERCEL) {
-    forcePublicResolvers();
-  }
-
-  console.log(`Connecting to MongoDB: ${dbName}`);
-
-  const attempt = () =>
-    mongoose.connect(uri, options).then(() => {
-      console.log(`MongoDB connected: ${dbName}`);
-      return mongoose.connection;
-    });
-
-  return attempt().catch((err) => {
-    // querySrv refused / hostname not found — retry once through public
-    // resolvers, including on Vercel where the platform resolver can also
-    // refuse SRV lookups.
-    if (useSrv && isSrvDnsFailure(err)) {
-      console.warn(
-        `MongoDB SRV/DNS lookup failed (${err.message}) — retrying via public resolvers (8.8.8.8/1.1.1.1)`
-      );
-      forcePublicResolvers();
-      return mongoose
-        .disconnect()
-        .catch(() => {}) // nothing was established — clear any half-open state
-        .then(attempt);
-    }
-    throw err;
-  });
 }
 
+async function openConnection() {
+  const uri = process.env.MONGODB_URI;
+  if (!uri) throw new Error('MONGODB_URI is required');
+
+  const dbName = process.env.MONGODB_DB_NAME || 'NewHRMS';
+  preferReliableDns();
+
+  console.log(`Connecting to MongoDB: ${dbName}`);
+  await mongoose.connect(uri, connectOptions(dbName));
+  console.log(`MongoDB connected: ${dbName}`);
+  return mongoose.connection;
+}
+
+/**
+ * Single shared connect. Concurrent callers share the same promise;
+ * a failed attempt clears the cache so the next call can retry.
+ */
 function getConnection() {
-  if (!connectionPromise) {
-    connectionPromise = connect().catch((err) => {
-      connectionPromise = null; // allow a fresh retry on the next call
+  if (!connecting) {
+    connecting = openConnection().catch((err) => {
+      connecting = null;
       throw err;
     });
   }
-  return connectionPromise;
+  return connecting;
 }
 
-/**
- * Connect once and cache the promise so warm serverless invocations reuse the
- * existing connection instead of dialing again. Scripts keep using this.
- */
+/** Scripts / boot: connect once and reuse. */
 export function connectDB() {
   return getConnection();
 }
 
 /**
- * Resolves once a live connection exists. The serverless handler awaits this
- * BEFORE handling any request, so every model query runs against an
- * established connection — eliminating Mongoose's operation buffering.
- *
- * Retries once if a cached connect resolved but the connection dropped again
- * (mongoose auto-reconnect window), so a request never queries a dead
- * connection.
- *
- * NOTE: connect() itself retries once on DNS/SRV failures, so a cold start
- * can spend up to ~40s before failing with a 503 — still within the 60s
- * serverless maxDuration.
+ * Request path: wait until mongoose is actually connected.
+ * If a previous connection dropped, open a fresh one.
  */
 export async function ensureDB() {
-  if (mongoose.connection.readyState === 1) return mongoose.connection;
-
-  for (let attempt = 0; attempt < 2; attempt++) {
-    if (!connectionPromise || mongoose.connection.readyState === 0) {
-      connectionPromise = connect().catch((err) => {
-        connectionPromise = null; // allow a fresh retry on the next call
-        throw err;
-      });
-    }
-    await connectionPromise;
-    if (mongoose.connection.readyState === 1) return mongoose.connection;
-    connectionPromise = null; // stale promise — force a fresh connect
+  if (mongoose.connection.readyState === CONNECTED) {
+    return mongoose.connection;
   }
 
-  throw new Error('MongoDB connection unavailable');
+  if (mongoose.connection.readyState === DISCONNECTED) {
+    connecting = null;
+  }
+
+  await getConnection();
+
+  if (mongoose.connection.readyState !== CONNECTED) {
+    connecting = null;
+    await getConnection();
+  }
+
+  if (mongoose.connection.readyState !== CONNECTED) {
+    throw new Error(
+      'MongoDB connection unavailable. Check MONGODB_URI and Atlas Network Access (server IP allowlist).'
+    );
+  }
+
+  return mongoose.connection;
 }
