@@ -3,7 +3,7 @@ import Employee from '../models/Employee.js';
 import AuditLog from '../models/AuditLog.js';
 import { calculateSalaryDraft, SALARY_COMPANIES, mergeSalaryDraft, toPersistedSlipFields, applySalaryAdjustments, pickSalaryOverrides, computeSlipNetPay } from '../services/salaryCalc.js';
 import { buildPayslipForm } from '../services/payslipForm.js';
-import { parseListQuery, listResponse } from '../utils/helpers.js';
+import { parseListQuery, listResponse, isPastYearMonth } from '../utils/helpers.js';
 import { applyEmployeeListScope } from '../utils/employeeScope.js';
 import { renderSalarySlipPdf, buildSalarySlipPdfBuffer } from '../services/salarySlipPdf.js';
 import { sendSalarySlipEmail } from '../services/emailService.js';
@@ -39,9 +39,10 @@ function buildSlipPdfFilename(slip, payslip) {
 
 function resolveEmployeeEmail(employee) {
   if (!employee) return '';
-  const official = String(employee.email || '').trim();
-  if (official) return official;
-  return String(employee.profile_details?.personal_email || '').trim();
+  // Prefer personal email for salary slip delivery (official work email is login only for many staff).
+  const personal = String(employee.profile_details?.personal_email || '').trim();
+  if (personal) return personal;
+  return String(employee.email || '').trim();
 }
 
 export async function list(req, res) {
@@ -50,7 +51,6 @@ export async function list(req, res) {
     const filter = {};
     if (req.query.month) filter.month = Number(req.query.month);
     if (req.query.year) filter.year = Number(req.query.year);
-    if (req.query.payment_status) filter.payment_status = req.query.payment_status;
     if (req.query.company_key === 'ondial' || req.query.company_key === 'kriraai') {
       filter.company_key = req.query.company_key;
     }
@@ -144,7 +144,6 @@ async function upsertDraftFromCalc(employeeId, month, year, body, userId, existi
       custom_earnings: values.custom_earnings,
       custom_deductions: values.custom_deductions,
       status: 'Draft',
-      payment_status: existing?.payment_status || 'Pending',
       adjustment_note: note,
       generated_by: userId,
       generated_on: new Date(),
@@ -153,11 +152,23 @@ async function upsertDraftFromCalc(employeeId, month, year, body, userId, existi
   );
 }
 
+function assertGeneratablePeriod(month, year) {
+  if (!month || !year) throw new Error('month and year required');
+  if (Number(year) < 2026) throw new Error('Year must be 2026 or later');
+  if (!isPastYearMonth(month, year)) {
+    throw new Error('Salary slips can only be generated for past months (not current or future)');
+  }
+}
+
 export async function generate(req, res) {
   try {
     const { employee_id, month, year } = req.body;
     if (!employee_id || !month || !year) return res.status(400).json({ message: 'employee_id, month, year required' });
-    if (Number(year) < 2026) return res.status(400).json({ message: 'Year must be 2026 or later' });
+    try {
+      assertGeneratablePeriod(month, year);
+    } catch (err) {
+      return res.status(400).json({ message: err.message });
+    }
 
     const existing = await SalarySlip.findOne({ employee_id, month, year });
     if (existing && existing.status === 'Finalized') {
@@ -183,6 +194,12 @@ export async function generate(req, res) {
 export async function generateBulk(req, res) {
   try {
     const { department_id, month, year, company_key } = req.body;
+    if (!month || !year) return res.status(400).json({ message: 'month, year required' });
+    try {
+      assertGeneratablePeriod(month, year);
+    } catch (err) {
+      return res.status(400).json({ message: err.message });
+    }
     const filter = { role: 'employee', status: 'active' };
     if (department_id) filter.department_id = department_id;
     const emps = await Employee.find(filter).select('_id');
@@ -287,11 +304,6 @@ export async function reverse(req, res) {
   try {
     const slip = await SalarySlip.findById(req.params.id);
     if (!slip) return res.status(404).json({ message: 'Not found' });
-    if (slip.payment_status === 'Paid') {
-      slip.payment_status = 'Pending';
-      slip.paid_date = null;
-      slip.payment_reference = '';
-    }
     slip.status = 'Draft';
     slip.finalized_on = null;
     await slip.save();
@@ -307,19 +319,35 @@ export async function reverse(req, res) {
   }
 }
 
-export async function updatePayment(req, res) {
+/** Permanently delete a salary slip (removes it from HR and employee views). */
+export async function remove(req, res) {
   try {
     const slip = await SalarySlip.findById(req.params.id);
     if (!slip) return res.status(404).json({ message: 'Not found' });
-    if (slip.status !== 'Finalized') return res.status(400).json({ message: 'Finalize first' });
-    const { payment_status, paid_date, payment_reference } = req.body;
-    if (payment_status) slip.payment_status = payment_status;
-    if (paid_date !== undefined) slip.paid_date = paid_date ? new Date(paid_date) : null;
-    if (payment_reference !== undefined) slip.payment_reference = payment_reference;
-    await slip.save();
-    res.json(slip);
+
+    const snapshot = {
+      slip_id: slip._id,
+      employee_id: slip.employee_id,
+      month: slip.month,
+      year: slip.year,
+      status: slip.status,
+      net_pay: slip.net_pay,
+      sent_on: slip.sent_on,
+      sent_to: slip.sent_to,
+    };
+
+    await slip.deleteOne();
+
+    await AuditLog.create({
+      action: 'salary_delete',
+      performed_by: req.user._id,
+      target_employee_id: snapshot.employee_id,
+      details: snapshot,
+    });
+
+    res.json({ message: 'Salary slip deleted', deleted_id: snapshot.slip_id });
   } catch (e) {
-    res.status(500).json({ message: e.message });
+    res.status(500).json({ message: e.message || 'Failed to delete salary slip' });
   }
 }
 
@@ -437,13 +465,28 @@ export async function sendSlip(req, res) {
     const employee = slip.employee_id;
     const toEmail = resolveEmployeeEmail(employee);
     if (!toEmail) {
-      return res.status(400).json({ message: 'Employee has no email address on file' });
+      return res.status(400).json({
+        message: 'Employee has no personal email on file. Add personal email in the employee profile, then try again.',
+      });
     }
 
     const payslip = await buildPayslipForm(slip.toObject());
-    const filename = buildSlipPdfFilename(slip, payslip);
+    const filename =
+      String(req.body?.pdf_filename || '').trim() || buildSlipPdfFilename(slip, payslip);
     const monthLabel = MONTH_NAMES[slip.month - 1] || String(slip.month);
-    const pdfBuffer = await buildSalarySlipPdfBuffer(payslip);
+
+    // Prefer client-rendered PDF (same as View / Download PDF UI). Fallback to server PDF.
+    let pdfBuffer;
+    const rawBase64 = String(req.body?.pdf_base64 || '').trim();
+    if (rawBase64) {
+      const cleaned = rawBase64.replace(/^data:application\/pdf;base64,/i, '');
+      pdfBuffer = Buffer.from(cleaned, 'base64');
+      if (!pdfBuffer.length) {
+        return res.status(400).json({ message: 'Invalid PDF payload for salary slip email' });
+      }
+    } else {
+      pdfBuffer = await buildSalarySlipPdfBuffer(payslip);
+    }
 
     const { messageId } = await sendSalarySlipEmail({
       to: toEmail,

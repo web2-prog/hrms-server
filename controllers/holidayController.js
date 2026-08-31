@@ -25,7 +25,7 @@ export async function list(req, res) {
     items.sort((a, b) => {
       const da = a.date || a.start_date || '';
       const db_ = b.date || b.start_date || '';
-      return da < db_ ? -1 : da > db_ ? 1 : 0;
+      return da < db_ ? 1 : da > db_ ? -1 : 0;
     });
     const total = items.length;
     const data = items.slice(skip, skip + limit);

@@ -3,7 +3,7 @@ import MonthlySummary from '../models/MonthlySummary.js';
 import Employee from '../models/Employee.js';
 import Leave from '../models/Leave.js';
 import Attendance from '../models/Attendance.js';
-import { recalculateMonthlySummary } from './monthlyHours.js';
+import { recalculateMonthlySummary, isShortfallManagementActive } from './monthlyHours.js';
 import {
   getSalaryDeductionBond,
   resolveMonthlySalary,
@@ -210,10 +210,11 @@ export async function calculateSalaryDraft(employeeId, month, year, options = {}
   // Salary pays only approved Management OT — not attendance Extra / General OT
   const overtime = Number(summary?.management_ot_hours || 0);
   const rawShortfall = Math.max(0, target - counted);
-  const shortfallAction = summary?.shortfall_action || null;
-  const needsShortfallDecision = rawShortfall > 0.01 && !shortfallAction;
+  const shortfallMgmtActive = isShortfallManagementActive(month, year);
+  const shortfallAction = shortfallMgmtActive ? summary?.shortfall_action || null : null;
+  const needsShortfallDecision = shortfallMgmtActive && rawShortfall > 0.01 && !shortfallAction;
 
-  // Deduct only when admin/HR chose salary deduction; undecided / carry_forward → no pay cut on draft
+  // Deduct only when admin/HR chose salary deduction (Aug 2026+); undecided / carry_forward / pre-Aug → no pay cut
   const shortfall = shortfallAction === 'deduct' ? rawShortfall : 0;
 
   const hourly = target > 0 ? base / target : 0;
@@ -276,7 +277,7 @@ export async function calculateSalaryDraft(employeeId, month, year, options = {}
     shortfall_action: shortfallAction || undefined,
     needs_shortfall_decision: needsShortfallDecision,
     pending_hours: round2(rawShortfall),
-    carried_forward_hours: round2(summary?.carried_forward_hours || 0),
+    carried_forward_hours: shortfallMgmtActive ? round2(summary?.carried_forward_hours || 0) : 0,
     deduction_amount: round2(deduction_amount),
     leave_deduction_amount: round2(leave_deduction_amount),
     early_checkout_minutes: round2(early_checkout_minutes),

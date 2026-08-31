@@ -52,7 +52,7 @@ export async function computeApprovedEarlyCheckoutStats(employeeId, month, year,
     employee_id: employeeId,
     date: { $in: dates },
   })
-    .select('date check_out working_hours')
+    .select('date check_out working_hours auto_checkout')
     .lean();
   const attByDate = new Map(attendance.map((a) => [a.date, a]));
 
@@ -60,12 +60,16 @@ export async function computeApprovedEarlyCheckoutStats(employeeId, month, year,
   let shortfallHours = 0;
   let count = 0;
   for (const req of requests) {
-    const leaveAt = req.requested_time || attByDate.get(req.date)?.check_out;
+    const att = attByDate.get(req.date);
+    // Count only after the employee has actually checked out.
+    if (!att?.check_out) continue;
+    // Prefer actual leave time; if day was auto-closed overnight, use the requested time.
+    const leaveAt = att.auto_checkout ? req.requested_time || att.check_out : att.check_out;
     const early = earlyMinutesForRequest(leaveAt, shiftEnd);
     if (early <= 0) continue;
     mins += early;
     count += 1;
-    const actual = Number(attByDate.get(req.date)?.working_hours) || 0;
+    const actual = Number(att.working_hours) || 0;
     if (actual < threshold) shortfallHours += threshold - actual;
   }
 

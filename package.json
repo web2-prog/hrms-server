@@ -15,6 +15,7 @@
     "migrate:holidays": "node scripts/migrateHolidaysUnified.js",
     "migrate:hrms": "node scripts/migrateHrmsToNewHrms.js",
     "migrate:may-aug": "node scripts/migrateMayAugHrms.js",
+    "remigrate:august": "node scripts/remigrateAugustHrms.js",
     "set:late-buffer": "node scripts/setLateBuffer0905.js",
     "sync:recent": "node scripts/syncHrmsRecentDays.js",
     "sync:overtime": "node scripts/syncHrmsOvertime.js",

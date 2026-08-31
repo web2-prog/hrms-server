@@ -2,7 +2,7 @@ import Employee from '../models/Employee.js';
 import SalarySlip from '../models/SalarySlip.js';
 import AuditLog from '../models/AuditLog.js';
 import { parseListQuery, listResponse } from '../utils/helpers.js';
-import { applyShortfallDecision, recalculateMonthlySummary } from '../services/monthlyHours.js';
+import { applyShortfallDecision, recalculateMonthlySummary, isShortfallManagementActive } from '../services/monthlyHours.js';
 import { getEffectiveShiftForEmployee } from '../services/shift.js';
 import { calculateSalaryDraft, mergeSalaryDraft, toPersistedSlipFields } from '../services/salaryCalc.js';
 
@@ -49,8 +49,8 @@ export async function list(req, res) {
       const dailyTarget = shift?.working_hours_per_day ?? emp.department_id?.working_hours_per_day ?? 8.25;
 
       const counted = summary?.monthly_counted_hours ?? 0;
-      const generalOt = summary?.overtime_hours ?? 0;
       const attendanceOt = summary?.attendance_ot_hours ?? 0;
+      const generalOt = attendanceOt;
       const managementOt = summary?.management_ot_hours ?? 0;
       const shortfallOrSurplus = summary?.monthly_shortfall_or_surplus ?? 0;
       const workingHours = counted + attendanceOt;
@@ -61,12 +61,13 @@ export async function list(req, res) {
           : shortfallOrSurplus < 0
             ? Math.abs(shortfallOrSurplus)
             : 0;
-      const shortfallAction = summary?.shortfall_action || null;
-      const carriedForward = summary?.carried_forward_hours ?? 0;
-      const carriedToNext = summary?.carried_to_next_hours ?? 0;
+      const shortfallMgmtActive = isShortfallManagementActive(month, year);
+      const shortfallAction = shortfallMgmtActive ? summary?.shortfall_action || null : null;
+      const carriedForward = shortfallMgmtActive ? summary?.carried_forward_hours ?? 0 : 0;
+      const carriedToNext = shortfallMgmtActive ? summary?.carried_to_next_hours ?? 0 : 0;
 
       let status = 'OnTime';
-      if (pendingHours > 0.01 && !shortfallAction) status = 'Pending Decision';
+      if (shortfallMgmtActive && pendingHours > 0.01 && !shortfallAction) status = 'Pending Decision';
       else if (shortfallAction === 'carry_forward') status = 'Carry Forward';
       else if (shortfallAction === 'deduct') status = 'Deduct';
       else if (managementOt > 0.01) status = 'Management OT';
@@ -96,7 +97,8 @@ export async function list(req, res) {
         approved_leave_days_in_month: summary?.approved_leave_days_in_month ?? 0,
         daily_target_hours: dailyTarget,
         status,
-        needs_shortfall_decision: pendingHours > 0.01 && !shortfallAction,
+        needs_shortfall_decision: shortfallMgmtActive && pendingHours > 0.01 && !shortfallAction,
+        shortfall_management_active: shortfallMgmtActive,
       });
     }
 
@@ -121,6 +123,12 @@ export async function decideShortfall(req, res) {
     }
     if (Number(year) < 2026) {
       return res.status(400).json({ message: 'Year must be 2026 or later' });
+    }
+    if (!isShortfallManagementActive(Number(month), Number(year))) {
+      return res.status(400).json({
+        message:
+          'Salary Deduction / Carry Forward starts from August 2026. Earlier months are not managed this way.',
+      });
     }
 
     const summary = await applyShortfallDecision(
@@ -155,7 +163,6 @@ export async function decideShortfall(req, res) {
           custom_earnings: values.custom_earnings,
           custom_deductions: values.custom_deductions,
           status: 'Draft',
-          payment_status: existing?.payment_status || 'Pending',
           adjustment_note: `Salary deduction for ${draft.shortfall_hours}h shortfall.`,
           generated_by: req.user._id,
           generated_on: new Date(),

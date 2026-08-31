@@ -31,9 +31,9 @@ function mapAttendanceRow(doc) {
     employee_id: json.employee_id,
     date: json.date,
     hours: Math.round(hours * 10000) / 10000,
-    reason: 'Extra hours from attendance (worked beyond shift)',
+    reason: 'Auto (worked beyond daily hours)',
     status: 'Extra',
-    ot_type: 'Attendance',
+    ot_type: 'General',
     working_hours: json.working_hours,
     applied_on: json.updatedAt || json.createdAt,
   };
@@ -51,13 +51,14 @@ export async function list(req, res) {
     const includeRequests = source === 'all' || source === 'requests' || source === 'request';
     const includeAttendance =
       (source === 'all' || source === 'attendance') &&
-      // Attendance Extra is not Pending/Approved/Rejected — skip when those status filters are set
+      // Auto General OT (Extra) — skip when filtering Pending/Approved/Rejected only
       (!req.query.status || req.query.status === 'Extra') &&
-      (!req.query.ot_type || req.query.ot_type === 'Attendance');
+      (!req.query.ot_type || req.query.ot_type === 'General' || req.query.ot_type === 'Attendance');
 
     const includeRequestsFiltered =
       includeRequests &&
       req.query.ot_type !== 'Attendance' &&
+      req.query.ot_type !== 'General' &&
       req.query.status !== 'Extra';
 
     let rows = [];
@@ -65,7 +66,11 @@ export async function list(req, res) {
     if (includeRequestsFiltered) {
       const filter = { ...empFilter };
       if (req.query.status) filter.status = req.query.status;
-      if (req.query.ot_type && req.query.ot_type !== 'Attendance') filter.ot_type = req.query.ot_type;
+      if (req.query.ot_type && req.query.ot_type !== 'Attendance' && req.query.ot_type !== 'General') {
+        filter.ot_type = req.query.ot_type;
+      } else if (req.query.ot_type === 'General') {
+        filter.ot_type = 'Management';
+      }
       if (dateRegex) filter.date = dateRegex;
       else if (req.query.from_date && req.query.to_date) {
         filter.date = { $gte: req.query.from_date, $lte: req.query.to_date };
@@ -135,12 +140,19 @@ export async function apply(req, res) {
     const year = Number(yy);
     if (year < 2026) return res.status(400).json({ message: 'Year must be 2026 or later' });
 
+    if (req.body.ot_type && req.body.ot_type !== 'Management') {
+      return res.status(400).json({
+        message: 'General OT is automatic when you work beyond daily hours. Only Management OT can be requested.',
+      });
+    }
+
     const doc = await OvertimeRequest.create({
       employee_id: req.user._id,
       date,
       hours: Math.round(hrs * 100) / 100,
       reason: String(reason).trim(),
       status: 'Pending',
+      ot_type: 'Management',
     });
     res.status(201).json(doc);
   } catch (e) {
@@ -150,7 +162,7 @@ export async function apply(req, res) {
 
 export async function decide(req, res) {
   try {
-    const { status, ot_type, decision_note } = req.body;
+    const { status, decision_note } = req.body;
     if (!['Approved', 'Rejected'].includes(status)) {
       return res.status(400).json({ message: 'Invalid status' });
     }
@@ -162,10 +174,7 @@ export async function decide(req, res) {
     }
 
     if (status === 'Approved') {
-      if (!['General', 'Management'].includes(ot_type)) {
-        return res.status(400).json({ message: 'ot_type must be General or Management when approving' });
-      }
-      doc.ot_type = ot_type;
+      doc.ot_type = 'Management';
     } else {
       doc.ot_type = undefined;
     }

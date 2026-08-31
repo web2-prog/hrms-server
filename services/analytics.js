@@ -310,16 +310,12 @@ export async function buildYearAnalytics({ year, month, department_id, employee_
 
     if (ot.status !== 'Approved') continue;
 
-    const type = ot.ot_type || 'General';
     bucket.overtime_all_hours = round2(bucket.overtime_all_hours + hours);
     if (empRow) empRow.overtime_all_hours = round2(empRow.overtime_all_hours + hours);
 
-    if (type === 'Management') {
+    if (ot.ot_type === 'Management') {
       bucket.overtime_management_hours = round2(bucket.overtime_management_hours + hours);
       if (empRow) empRow.overtime_management_hours = round2(empRow.overtime_management_hours + hours);
-    } else {
-      bucket.overtime_general_hours = round2(bucket.overtime_general_hours + hours);
-      if (empRow) empRow.overtime_general_hours = round2(empRow.overtime_general_hours + hours);
     }
   }
 
