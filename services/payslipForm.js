@@ -14,15 +14,50 @@ function formatDoj(joiningDate) {
   return `${day}/${mon}/${year}`;
 }
 
+/** Populated employee doc vs bare ObjectId / string id. */
+function resolveEmployeeRef(slip) {
+  const raw = slip?.employee_id;
+  if (!raw) return { emp: null, empId: null };
+  // Populated employee has a string name (ObjectId does not).
+  if (typeof raw === 'object' && raw !== null && typeof raw.name === 'string') {
+    return { emp: raw, empId: raw._id };
+  }
+  return { emp: null, empId: raw };
+}
+
 /**
- * Sum prior slips in same calendar year (month < current) for YTD columns.
+ * Indian financial year (Apr–Mar) filter for prior salary slips.
+ * Includes months from FY start up to (but not including) the current month.
+ */
+export function priorSlipsFilter(employeeId, month, year) {
+  const m = Number(month);
+  const y = Number(year);
+  const base = { employee_id: employeeId };
+  if (!Number.isFinite(m) || !Number.isFinite(y) || m < 1 || m > 12) {
+    return { ...base, year: y, month: { $lt: m } };
+  }
+  if (m >= 4) {
+    // FY starts April of the same calendar year
+    return { ...base, year: y, month: { $gte: 4, $lt: m } };
+  }
+  // Jan–Mar: FY started April of previous calendar year
+  return {
+    ...base,
+    $or: [
+      { year: y - 1, month: { $gte: 4 } },
+      { year: y, month: { $gte: 1, $lt: m } },
+    ],
+  };
+}
+
+/**
+ * Sum prior slips in the same Indian financial year for YTD columns.
+ * Current month amounts are always included (even if this slip is still Draft).
  */
 export async function computeYtdForSlip(employeeId, month, year, current) {
-  const prior = await SalarySlip.find({
-    employee_id: employeeId,
-    year,
-    month: { $lt: month },
-  }).lean();
+  const prior = employeeId
+    ? await SalarySlip.find(priorSlipsFilter(employeeId, month, year)).lean()
+    : [];
 
   const sum = (key) => prior.reduce((acc, s) => acc + (Number(s[key]) || 0), 0);
 
@@ -42,20 +77,79 @@ export async function computeYtdForSlip(employeeId, month, year, current) {
     });
   };
 
+  const custom_earnings = ytdByLabel('custom_earnings', current.custom_earnings);
+  const custom_deductions = ytdByLabel('custom_deductions', current.custom_deductions);
+
+  const ytd_basic = round2(sum('base_salary') + (Number(current.base_salary) || 0));
+  const ytd_overtime = round2(sum('overtime_amount') + (Number(current.overtime_amount) || 0));
+  const ytd_shortfall_deduction = round2(
+    sum('deduction_amount') + (Number(current.deduction_amount) || 0)
+  );
+  const ytd_leave_deduction = round2(
+    sum('leave_deduction_amount') + (Number(current.leave_deduction_amount) || 0)
+  );
+  const ytd_early_checkout_deduction = round2(
+    sum('early_checkout_deduction_amount') + (Number(current.early_checkout_deduction_amount) || 0)
+  );
+  const ytd_bond_security = round2(
+    sum('bond_security_deduction') + (Number(current.bond_security_deduction) || 0)
+  );
+  const ytd_tds = round2(sum('tds') + (Number(current.tds) || 0));
+  const ytd_custom_earnings = round2(custom_earnings.reduce((s, i) => s + (Number(i.ytd) || 0), 0));
+  const ytd_custom_deductions = round2(
+    custom_deductions.reduce((s, i) => s + (Number(i.ytd) || 0), 0)
+  );
+
+  // Prior custom lines that no longer appear on the current slip still count toward YTD totals.
+  const priorCustomEarnExtra = round2(
+    prior.reduce((acc, s) => {
+      for (const item of s.custom_earnings || []) {
+        const label = String(item.label || '').trim();
+        if (!label) continue;
+        if (custom_earnings.some((c) => c.label === label)) continue;
+        acc += Number(item.amount) || 0;
+      }
+      return acc;
+    }, 0)
+  );
+  const priorCustomDedExtra = round2(
+    prior.reduce((acc, s) => {
+      for (const item of s.custom_deductions || []) {
+        const label = String(item.label || '').trim();
+        if (!label) continue;
+        if (custom_deductions.some((c) => c.label === label)) continue;
+        acc += Number(item.amount) || 0;
+      }
+      return acc;
+    }, 0)
+  );
+
+  const ytd_gross_earnings = round2(
+    ytd_basic + ytd_overtime + ytd_custom_earnings + priorCustomEarnExtra
+  );
+  const ytd_total_deductions = round2(
+    ytd_shortfall_deduction +
+      ytd_leave_deduction +
+      ytd_early_checkout_deduction +
+      ytd_bond_security +
+      ytd_tds +
+      ytd_custom_deductions +
+      priorCustomDedExtra
+  );
+
   return {
-    ytd_basic: round2(sum('base_salary') + (Number(current.base_salary) || 0)),
-    ytd_overtime: round2(sum('overtime_amount') + (Number(current.overtime_amount) || 0)),
-    ytd_shortfall_deduction: round2(sum('deduction_amount') + (Number(current.deduction_amount) || 0)),
-    ytd_leave_deduction: round2(
-      sum('leave_deduction_amount') + (Number(current.leave_deduction_amount) || 0)
-    ),
-    ytd_early_checkout_deduction: round2(
-      sum('early_checkout_deduction_amount') + (Number(current.early_checkout_deduction_amount) || 0)
-    ),
-    ytd_bond_security: round2(sum('bond_security_deduction') + (Number(current.bond_security_deduction) || 0)),
-    ytd_tds: round2(sum('tds') + (Number(current.tds) || 0)),
-    custom_earnings: ytdByLabel('custom_earnings', current.custom_earnings),
-    custom_deductions: ytdByLabel('custom_deductions', current.custom_deductions),
+    ytd_basic,
+    ytd_overtime,
+    ytd_shortfall_deduction,
+    ytd_leave_deduction,
+    ytd_early_checkout_deduction,
+    ytd_bond_security,
+    ytd_tds,
+    ytd_gross_earnings,
+    ytd_total_deductions,
+    ytd_net_pay: round2(ytd_gross_earnings - ytd_total_deductions),
+    custom_earnings,
+    custom_deductions,
   };
 }
 
@@ -63,8 +157,7 @@ export async function computeYtdForSlip(employeeId, month, year, current) {
  * Build Zoho-style payslip form payload from a slip (+ populated employee).
  */
 export async function buildPayslipForm(slip) {
-  const emp = slip.employee_id && typeof slip.employee_id === 'object' ? slip.employee_id : null;
-  const empId = emp?._id || slip.employee_id;
+  const { emp, empId } = resolveEmployeeRef(slip);
   const ytd = await computeYtdForSlip(empId, slip.month, slip.year, slip);
 
   const basic = Number(slip.base_salary) || 0;
@@ -95,6 +188,11 @@ export async function buildPayslipForm(slip) {
   const shortfallRate =
     shortfallHours > 0 ? round2(shortfall / shortfallHours) : hourlyRate;
 
+  const designation =
+    emp?.department_id && typeof emp.department_id === 'object'
+      ? emp.department_id.name || ''
+      : '';
+
   return {
     companyKey: slip.company_key || 'kriraai',
     companyName: slip.company_name || 'KriraAI Pvt. Ltd.',
@@ -103,7 +201,7 @@ export async function buildPayslipForm(slip) {
       'C2-1310, Pragati IT Park, opp. AR Mall, Mota Varachha Road, Uttran, Surat',
     empName: emp?.name || '',
     empNo: emp?.employee_id || '',
-    designation: emp?.department_id?.name || '',
+    designation,
     doj: formatDoj(emp?.joining_date),
     payDate: slip.pay_date || '',
     pfNo: slip.pf_no || 'NA',
@@ -112,8 +210,8 @@ export async function buildPayslipForm(slip) {
     leaveDays: Number(slip.leave_days) || 0,
     lopDays: Number(slip.lop_days) || 0,
     workingDays: Number(slip.working_days) || 0,
-    month: slip.month,
-    year: slip.year,
+    month: Number(slip.month) || 0,
+    year: Number(slip.year) || 0,
     basic,
     ytdBasic: ytd.ytd_basic,
     overtime,
@@ -133,8 +231,11 @@ export async function buildPayslipForm(slip) {
     customEarnings,
     customDeductions,
     grossEarnings: gross,
+    ytdGrossEarnings: ytd.ytd_gross_earnings,
     totalDeductions,
+    ytdTotalDeductions: ytd.ytd_total_deductions,
     netPay: Number(slip.net_pay) != null ? round2(slip.net_pay) : net,
+    ytdNetPay: ytd.ytd_net_pay,
     targetHours,
     countedHours,
     overtimeHours,

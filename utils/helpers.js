@@ -295,6 +295,15 @@ export function nowYearMonth(d = new Date()) {
   return { year: Number(p.year), month: Number(p.month) };
 }
 
+/** True when (month, year) is strictly before the current business month. */
+export function isPastYearMonth(month, year, d = new Date()) {
+  const m = Number(month);
+  const y = Number(year);
+  if (!Number.isFinite(m) || !Number.isFinite(y) || m < 1 || m > 12) return false;
+  const now = nowYearMonth(d);
+  return y < now.year || (y === now.year && m < now.month);
+}
+
 /** Normalize free-text time to HH:MM:SS (accepts HH:MM or HH:MM:SS) */
 export function normalizeTime(t) {
   if (t == null || t === '') return null;

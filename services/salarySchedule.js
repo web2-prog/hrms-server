@@ -75,15 +75,31 @@ export function generateSalarySchedule({
 export function resolveMonthlySalary(employee, month, year) {
   const schedule = Array.isArray(employee?.salary_schedule) ? employee.salary_schedule : [];
   const probe = `${year}-${String(month).padStart(2, '0')}-15`;
-  const hit = schedule.find((s) => {
-    const from = toISODate(s.start_date);
-    const to = toISODate(s.end_date);
-    if (!from) return false;
-    if (from > probe) return false;
-    if (to && to < probe) return false;
-    return true;
-  });
-  if (hit && hit.monthly_salary != null) return Number(hit.monthly_salary) || 0;
+
+  const bands = schedule
+    .map((s) => ({
+      monthly_salary: Number(s.monthly_salary),
+      from: toISODate(s.start_date),
+      to: toISODate(s.end_date),
+    }))
+    .filter((s) => s.from)
+    .sort((a, b) => a.from.localeCompare(b.from));
+
+  // Exact band covering mid-month — prefer the latest positive salary if several overlap.
+  const covering = bands.filter((s) => s.from <= probe && (!s.to || s.to >= probe));
+  for (let i = covering.length - 1; i >= 0; i -= 1) {
+    if (covering[i].monthly_salary > 0) return covering[i].monthly_salary;
+  }
+
+  // Carry forward last positive schedule salary that started on/before this month
+  // (avoids treating placeholder 0 bands as a real zero salary).
+  let lastPositive = 0;
+  for (const s of bands) {
+    if (s.from > probe) break;
+    if (s.monthly_salary > 0) lastPositive = s.monthly_salary;
+  }
+  if (lastPositive > 0) return lastPositive;
+
   return Number(employee?.base_salary) || 0;
 }
 
