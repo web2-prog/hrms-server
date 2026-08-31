@@ -1,7 +1,7 @@
 import mongoose from 'mongoose';
 
 // An employee asks to leave before shift end. HR/Admin must approve or reject.
-// On approval the attendance record gets check_out = requested_time.
+// Approval unlocks checkout for the employee; they check out themselves (does not auto-checkout).
 const earlyCheckoutRequestSchema = new mongoose.Schema(
   {
     employee_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Employee', required: true, index: true },

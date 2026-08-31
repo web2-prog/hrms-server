@@ -14,5 +14,6 @@ router.patch('/:id/payment', authorize('admin', 'hr'), ctrl.updatePayment);
 router.patch('/:id/company', authorize('admin', 'hr'), ctrl.updateCompany);
 router.patch('/:id/adjust', authorize('admin', 'hr'), ctrl.updateAdjustments);
 router.post('/:id/send', authorize('admin', 'hr'), ctrl.sendSlip);
+router.delete('/:id', authorize('admin', 'hr'), ctrl.remove);
 router.get('/:id/pdf', authorize('admin', 'hr', 'employee'), ctrl.downloadPdf);
 export default router;

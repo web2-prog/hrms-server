@@ -305,7 +305,14 @@ async function main() {
   await mongoose.disconnect();
 }
 
-main().catch((e) => {
-  console.error(e);
-  process.exit(1);
-});
+const isDirectRun =
+  process.argv[1] &&
+  (process.argv[1].endsWith('syncHrmsOvertime.js') ||
+    process.argv[1].endsWith('syncHrmsOvertime'));
+
+if (isDirectRun) {
+  main().catch((e) => {
+    console.error(e);
+    process.exit(1);
+  });
+}
