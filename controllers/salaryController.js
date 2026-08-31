@@ -471,21 +471,13 @@ export async function sendSlip(req, res) {
     }
 
     const payslip = await buildPayslipForm(slip.toObject());
-    const filename =
-      String(req.body?.pdf_filename || '').trim() || buildSlipPdfFilename(slip, payslip);
+    const filename = buildSlipPdfFilename(slip, payslip);
     const monthLabel = MONTH_NAMES[slip.month - 1] || String(slip.month);
 
-    // Prefer client-rendered PDF (same as View / Download PDF UI). Fallback to server PDF.
-    let pdfBuffer;
-    const rawBase64 = String(req.body?.pdf_base64 || '').trim();
-    if (rawBase64) {
-      const cleaned = rawBase64.replace(/^data:application\/pdf;base64,/i, '');
-      pdfBuffer = Buffer.from(cleaned, 'base64');
-      if (!pdfBuffer.length) {
-        return res.status(400).json({ message: 'Invalid PDF payload for salary slip email' });
-      }
-    } else {
-      pdfBuffer = await buildSalarySlipPdfBuffer(payslip);
+    // Always build PDF on the server. Client base64 was hitting Vercel’s ~4.5MB body limit.
+    const pdfBuffer = await buildSalarySlipPdfBuffer(payslip);
+    if (!pdfBuffer?.length) {
+      return res.status(500).json({ message: 'Failed to generate salary slip PDF for email' });
     }
 
     const { messageId } = await sendSalarySlipEmail({
