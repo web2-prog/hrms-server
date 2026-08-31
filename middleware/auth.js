@@ -26,5 +26,6 @@ export function authorize(...roles) {
 }
 
 export function signToken(user) {
-  return jwt.sign({ id: user._id, role: user.role }, process.env.JWT_SECRET, { expiresIn: '7d' });
+  // No expiresIn — session ends only when the user logs out (client clears the token).
+  return jwt.sign({ id: user._id, role: user.role }, process.env.JWT_SECRET);
 }
