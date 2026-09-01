@@ -48,11 +48,18 @@ export function round2(n) {
   return Math.round((Number(n) || 0) * 100) / 100;
 }
 
+/** Fixed calendar divisor for per-day salary (leave / LOP deductions). */
+export const SALARY_DAYS_PER_MONTH = 30.42;
+
+export function dailySalaryRate(baseSalary) {
+  const base = Number(baseSalary) || 0;
+  return base > 0 ? round2(base / SALARY_DAYS_PER_MONTH) : 0;
+}
+
 const STRING_OVERRIDE_FIELDS = new Set(['pay_date', 'pf_no', 'uan']);
 
-/** Money / display fields HR/Admin may override on a draft slip. */
+/** Money / display fields HR/Admin may override on a draft slip (base_salary is set from employee profile only). */
 export const SALARY_OVERRIDE_FIELDS = [
-  'base_salary',
   'overtime_amount',
   'overtime_hours',
   'deduction_amount',
@@ -118,6 +125,7 @@ export function computeSlipNetPay(parts) {
 export function applySalaryAdjustments(draft, overrides = {}, extras = {}) {
   const next = { ...draft };
   const applied = pickSalaryOverrides(overrides);
+  delete applied.base_salary;
   for (const [key, value] of Object.entries(applied)) {
     next[key] = value;
   }
@@ -228,9 +236,9 @@ export async function calculateSalaryDraft(employeeId, month, year, options = {}
   const early_checkout_stats = await computeEarlyCheckoutStats(employeeId, month, year);
   const early_checkout_minutes = early_checkout_stats.minutes;
 
-  // Per-day rate for unpaid leave; per-hour rate for early checkout (same multiplier family as shortfall)
-  const daily_rate = working_days > 0 ? base / working_days : 0;
-  const leave_deduction_amount = lop_days * daily_rate;
+  // Per-day rate for unpaid leave: salary / 30.42 (not working days)
+  const daily_rate = dailySalaryRate(base);
+  const leave_deduction_amount = round2(lop_days * daily_rate);
   const early_checkout_hours = early_checkout_minutes / 60;
   const early_checkout_deduction_amount = early_checkout_hours * deduction_rate;
 

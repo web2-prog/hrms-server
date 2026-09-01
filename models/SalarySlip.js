@@ -57,7 +57,7 @@ const schema = new mongoose.Schema(
     /** Approved leave days in the month (paid + unpaid). */
     leave_days: { type: Number, default: 0 },
     lop_days: { type: Number, default: 0 },
-    /** Calendar working days used for per-day leave deduction. */
+    /** Calendar working days in the month (display / paid-days; leave rate uses salary / 30.42). */
     working_days: { type: Number, default: 0 },
     pf_no: { type: String, default: 'NA' },
     uan: { type: String, default: 'NA' },
