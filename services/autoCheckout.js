@@ -3,6 +3,7 @@ import EarlyCheckoutRequest from '../models/EarlyCheckoutRequest.js';
 import CoverTimeRequest from '../models/CoverTimeRequest.js';
 import { todayISO, nowTime, minutesBetween, timeToSeconds } from '../utils/helpers.js';
 import { getEffectiveShiftForEmployee } from './shift.js';
+import { approvedLeaveFractionOnDate, dutyHoursFromShift } from './leaveDuty.js';
 import { recalculateAttendanceFields } from './attendanceCalc.js';
 import { recalculateForDate } from './monthlyHours.js';
 
@@ -38,13 +39,18 @@ async function applyAutoCheckout(rec) {
   rec.check_out = checkoutTime;
   rec.auto_checkout = true;
   const shift = await getEffectiveShiftForEmployee(rec.employee_id);
+  const duty = dutyHoursFromShift(
+    shift,
+    await approvedLeaveFractionOnDate(rec.employee_id, rec.date)
+  );
   Object.assign(
     rec,
     recalculateAttendanceFields(
       rec,
       shift?.working_hours_per_day ?? 8.25,
       shift?.shift_start,
-      shift?.late_buffer_minutes
+      shift?.late_buffer_minutes,
+      duty
     )
   );
   await rec.save();

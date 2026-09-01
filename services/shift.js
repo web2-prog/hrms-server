@@ -52,10 +52,15 @@ export async function getEffectiveShiftForEmployee(employeeId) {
   return { employee, ...resolveEffectiveShift(employee, dept) };
 }
 
-export function computeDailyStatus(workingHours, threshold) {
-  const diff = workingHours - threshold;
+/**
+ * Day status vs expected duty hours. Extra/OT only after `otHours` (full day),
+ * so a half-day leave completing `expectedHours` is OnTime, not Extra.
+ */
+export function computeDailyStatus(workingHours, expectedHours, otHours = expectedHours) {
   const eps = 1 / 120; // ~30 seconds
-  if (Math.abs(diff) < eps) return { status: 'OnTime', surplus_shortfall: 0 };
-  if (diff > 0) return { status: 'Extra', surplus_shortfall: diff };
-  return { status: 'Low', surplus_shortfall: diff };
+  const expected = Number(expectedHours);
+  const otAt = Number(otHours);
+  if (workingHours > otAt + eps) return { status: 'Extra', surplus_shortfall: workingHours - otAt };
+  if (workingHours + eps < expected) return { status: 'Low', surplus_shortfall: workingHours - expected };
+  return { status: 'OnTime', surplus_shortfall: 0 };
 }

@@ -8,7 +8,13 @@ import { computeDailyStatus } from './shift.js';
  * @param shiftStart department/employee shift start (HH:MM[:SS])
  * @param lateBufferMinutes inclusive department grace period after shift start
  */
-export function recalculateAttendanceFields(record, threshold, shiftStart = null, lateBufferMinutes = undefined) {
+export function recalculateAttendanceFields(
+  record,
+  threshold,
+  shiftStart = null,
+  lateBufferMinutes = undefined,
+  duty = null
+) {
   let breakMinutes = Number(record.break_total || 0);
   const workStart = effectiveWorkStart(
     record.check_in,
@@ -17,12 +23,14 @@ export function recalculateAttendanceFields(record, threshold, shiftStart = null
     lateBufferMinutes,
     record.penalty_minutes_override
   );
+  const expectedHours = duty?.expectedHours ?? threshold;
+  const otHours = duty?.otHours ?? threshold;
 
   if (record.check_in && record.check_out) {
     const totalMin = Math.max(0, minutesBetween(workStart, record.check_out));
     const workMin = Math.max(0, totalMin - breakMinutes);
     const working_hours = workMin / 60;
-    const { status, surplus_shortfall } = computeDailyStatus(working_hours, threshold);
+    const { status, surplus_shortfall } = computeDailyStatus(working_hours, expectedHours, otHours);
     return { working_hours, status, surplus_shortfall, break_total: breakMinutes };
   }
   if (record.check_in && !record.check_out) {

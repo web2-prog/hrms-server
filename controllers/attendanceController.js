@@ -6,9 +6,25 @@ import { parseListQuery, listResponse, todayISO, nowTime, nowYearMonth, APP_TIME
 import { applyEmployeeListScope } from '../utils/employeeScope.js';
 import { getEffectiveShiftForEmployee, resolveEffectiveShift } from '../services/shift.js';
 import { recalculateAttendanceFields } from '../services/attendanceCalc.js';
+import { approvedLeaveFractionOnDate, dutyHoursFromShift } from '../services/leaveDuty.js';
 import { recalculateForDate, recalculateMonthlySummary } from '../services/monthlyHours.js';
 import { closeStaleOpenSessions, isAtOrAfterAutoCheckout } from '../services/autoCheckout.js';
 import AuditLog from '../models/AuditLog.js';
+
+async function attendanceDuty(employeeId, date, shift) {
+  const fraction = await approvedLeaveFractionOnDate(employeeId, date);
+  return dutyHoursFromShift(shift, fraction);
+}
+
+function applyDutyFields(rec, shift, duty) {
+  return recalculateAttendanceFields(
+    rec,
+    shift.working_hours_per_day,
+    shift.shift_start,
+    shift.late_buffer_minutes,
+    duty
+  );
+}
 
 function roundHours(h) {
   return Math.round(Number(h || 0) * 10000) / 10000;
@@ -111,6 +127,7 @@ export async function myToday(req, res) {
       employee_id: req.user._id,
       date: todayISO(),
     }).sort({ createdAt: -1 });
+    const duty = dutyHoursFromShift(shift, await approvedLeaveFractionOnDate(req.user._id, rec.date));
     const penalty = lateCheckInPenalty(
       rec.check_in,
       shift?.shift_start,
@@ -134,6 +151,8 @@ export async function myToday(req, res) {
       early_checkout_request,
       cover_time_request,
       cover_time_min_hours: MIN_COVER_HOURS,
+      today_leave_day_type: duty.isHalfDay ? 'Half Day' : null,
+      checkout_hours: duty.expectedHours,
       work_start,
       late_minutes: penalty.late_minutes,
       penalty_minutes: penalty.penalty_minutes,
@@ -217,7 +236,9 @@ export async function checkOut(req, res) {
       return res.status(400).json({ message: 'Already checked out' });
     }
     const shift = await getEffectiveShiftForEmployee(req.user._id);
+    const duty = await attendanceDuty(req.user._id, rec.date, shift);
     const threshold = Number(shift.working_hours_per_day || 8.25);
+    const checkoutHours = Number(duty.expectedHours || threshold);
     const now = nowTime();
 
     // Active cover-time request: employee must stay at least 45m past daily hours before checkout.
@@ -243,18 +264,22 @@ export async function checkOut(req, res) {
     }).sort({ decided_at: -1, createdAt: -1 });
 
     if (!approvedEarly) {
-      const shiftEndSec = timeToSeconds(shift.shift_end);
-      const nowSec = timeToSeconds(now);
-      if (shiftEndSec != null && nowSec != null && nowSec < shiftEndSec) {
-        return res.status(400).json({
-          message: 'Checkout is available after your shift ends. Request early checkout if you need to leave sooner.',
-        });
+      if (!duty.isHalfDay) {
+        const shiftEndSec = timeToSeconds(shift.shift_end);
+        const nowSec = timeToSeconds(now);
+        if (shiftEndSec != null && nowSec != null && nowSec < shiftEndSec) {
+          return res.status(400).json({
+            message: 'Checkout is available after your shift ends. Request early checkout if you need to leave sooner.',
+          });
+        }
       }
 
       const workHours = liveWorkMinutes(rec, now, shift.shift_start, shift.late_buffer_minutes) / 60;
-      if (workHours + 1 / 120 < threshold) {
+      if (workHours + 1 / 120 < checkoutHours) {
         return res.status(400).json({
-          message: `Complete daily working hours (${threshold}h) before checkout, or request early checkout.`,
+          message: duty.isHalfDay
+            ? `Complete half-day hours (${checkoutHours}h) before checkout, or request early checkout.`
+            : `Complete daily working hours (${checkoutHours}h) before checkout, or request early checkout.`,
         });
       }
     }
@@ -266,7 +291,7 @@ export async function checkOut(req, res) {
     }
     rec.check_out = now;
     rec.auto_checkout = false;
-    const fields = recalculateAttendanceFields(rec, threshold, shift.shift_start, shift.late_buffer_minutes);
+    const fields = applyDutyFields(rec, shift, duty);
     Object.assign(rec, fields);
     await rec.save();
     await recalculateForDate(req.user._id, rec.date);
@@ -731,7 +756,8 @@ export async function update(req, res) {
       rec.break_started_at = break_started_at ? normalizeTime(break_started_at) : null;
     }
     const shift = await getEffectiveShiftForEmployee(rec.employee_id);
-    const fields = recalculateAttendanceFields(rec, shift.working_hours_per_day, shift.shift_start, shift.late_buffer_minutes);
+    const duty = await attendanceDuty(rec.employee_id, rec.date, shift);
+    const fields = applyDutyFields(rec, shift, duty);
     Object.assign(rec, fields);
     await rec.save();
     await recalculateForDate(rec.employee_id, rec.date);
@@ -899,7 +925,8 @@ export async function updateToday(req, res) {
       rec.auto_checkout = false;
     } else {
       const shift = await getEffectiveShiftForEmployee(employeeId);
-      Object.assign(rec, recalculateAttendanceFields(rec, shift.working_hours_per_day, shift.shift_start, shift.late_buffer_minutes));
+      const duty = await attendanceDuty(employeeId, date, shift);
+      Object.assign(rec, applyDutyFields(rec, shift, duty));
     }
 
     await rec.save();
@@ -999,7 +1026,8 @@ export async function bulkUpdate(req, res) {
       }
       if (u.break_total !== undefined) rec.break_total = Number(parseBreakMinutes(u.break_total).toFixed(4));
       const shift = await getEffectiveShiftForEmployee(rec.employee_id);
-      Object.assign(rec, recalculateAttendanceFields(rec, shift.working_hours_per_day, shift.shift_start, shift.late_buffer_minutes));
+      const duty = await attendanceDuty(rec.employee_id, rec.date, shift);
+      Object.assign(rec, applyDutyFields(rec, shift, duty));
       await rec.save();
       await recalculateForDate(rec.employee_id, rec.date);
       results.push(rec);

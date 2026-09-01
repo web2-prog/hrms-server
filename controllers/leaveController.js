@@ -27,6 +27,40 @@ export async function list(req, res) {
       const y = parseInt(req.query.year, 10);
       filter.from_date = { $lte: `${y}-12-31` };
       filter.to_date = { $gte: `${y}-01-01` };
+    } else if (req.query.month) {
+      const m = Math.max(1, Math.min(12, parseInt(req.query.month, 10) || 1));
+      // Overlaps calendar month `m` in any year (same-year span, or a wrap that includes `m`).
+      filter.$expr = {
+        $let: {
+          vars: {
+            f: { $dateFromString: { dateString: '$from_date' } },
+            t: { $dateFromString: { dateString: '$to_date' } },
+          },
+          in: {
+            $let: {
+              vars: {
+                yf: { $year: '$$f' },
+                yt: { $year: '$$t' },
+                mf: { $month: '$$f' },
+                mt: { $month: '$$t' },
+              },
+              in: {
+                $cond: [
+                  { $eq: ['$$yf', '$$yt'] },
+                  { $and: [{ $lte: ['$$mf', m] }, { $gte: ['$$mt', m] }] },
+                  {
+                    $or: [
+                      { $gt: [{ $subtract: ['$$yt', '$$yf'] }, 1] },
+                      { $gte: ['$$mf', m] },
+                      { $lte: ['$$mt', m] },
+                    ],
+                  },
+                ],
+              },
+            },
+          },
+        },
+      };
     } else if (req.query.from_date && req.query.to_date) {
       filter.from_date = { $lte: req.query.to_date };
       filter.to_date = { $gte: req.query.from_date };

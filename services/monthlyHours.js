@@ -1,12 +1,11 @@
 import Attendance from '../models/Attendance.js';
-import Leave from '../models/Leave.js';
 import MonthlySummary from '../models/MonthlySummary.js';
 import OvertimeRequest from '../models/OvertimeRequest.js';
 import CoverTimeRequest from '../models/CoverTimeRequest.js';
 import { getWorkingDaysInMonth } from './workingDays.js';
 import { getEffectiveShiftForEmployee } from './shift.js';
+import { dutyHoursFromShift, approvedLeaveFractionByDate } from './leaveDuty.js';
 import { recalculateAttendanceFields } from './attendanceCalc.js';
-import { datesInRange } from '../utils/helpers.js';
 
 /** Month-end Salary Deduction / Carry Forward management starts 1 Aug 2026. */
 export const SHORTFALL_MANAGEMENT_START = { year: 2026, month: 8 };
@@ -60,21 +59,13 @@ export async function recalculateMonthlySummary(employeeId, month, year) {
   const { working_days, working_dates } = await getWorkingDaysInMonth(year, month);
   const monthPrefix = `${year}-${String(month).padStart(2, '0')}`;
 
-  const leaves = await Leave.find({
-    employee_id: employeeId,
-    status: 'Approved',
-    from_date: { $lte: `${monthPrefix}-31` },
-    to_date: { $gte: `${monthPrefix}-01` },
-  }).lean();
+  const monthStart = `${monthPrefix}-01`;
+  const monthEnd = `${monthPrefix}-31`;
+  const leaveFractions = await approvedLeaveFractionByDate(employeeId, monthStart, monthEnd);
 
   const leaveDayMap = new Map();
-  for (const lv of leaves) {
-    const fraction = lv.day_type === 'Half Day' ? 0.5 : 1;
-    for (const d of datesInRange(lv.from_date, lv.to_date)) {
-      if (d.startsWith(monthPrefix) && working_dates.includes(d)) {
-        leaveDayMap.set(d, Math.max(leaveDayMap.get(d) || 0, fraction));
-      }
-    }
+  for (const [d, fraction] of leaveFractions) {
+    if (working_dates.includes(d)) leaveDayMap.set(d, fraction);
   }
   let approved_leave_days_in_month = 0;
   for (const frac of leaveDayMap.values()) approved_leave_days_in_month += frac;
@@ -100,7 +91,14 @@ export async function recalculateMonthlySummary(employeeId, month, year) {
     // Recompute completed days with the current department policy. This keeps
     // manual checkouts, auto-checkouts, and the bulk-recalculate action aligned.
     if (r.check_in && r.check_out) {
-      const fields = recalculateAttendanceFields(r, threshold, shift.shift_start, shift.late_buffer_minutes);
+      const duty = dutyHoursFromShift(shift, leaveDayMap.get(r.date) || 0);
+      const fields = recalculateAttendanceFields(
+        r,
+        threshold,
+        shift.shift_start,
+        shift.late_buffer_minutes,
+        duty
+      );
       const changed =
         Number(r.working_hours || 0) !== fields.working_hours ||
         Number(r.surplus_shortfall || 0) !== fields.surplus_shortfall ||
@@ -115,7 +113,9 @@ export async function recalculateMonthlySummary(employeeId, month, year) {
     const counted = Math.min(actual, threshold);
     monthly_counted_hours += counted;
     if (!r.auto_checkout && actual > threshold) attendance_ot_hours += actual - threshold;
-    if (r.check_out && actual < threshold) low_hours_from_checkout += threshold - actual;
+    const duty = dutyHoursFromShift(shift, leaveDayMap.get(r.date) || 0);
+    const expected = Number(duty.expectedHours || threshold);
+    if (r.check_out && actual < expected) low_hours_from_checkout += expected - actual;
   }
 
   // monthly_counted_hours = attendance (+ cover time below) only — never leave hours.
