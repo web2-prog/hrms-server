@@ -2,7 +2,7 @@ import Attendance from '../models/Attendance.js';
 import Employee from '../models/Employee.js';
 import EarlyCheckoutRequest from '../models/EarlyCheckoutRequest.js';
 import CoverTimeRequest, { MIN_COVER_HOURS } from '../models/CoverTimeRequest.js';
-import { parseListQuery, listResponse, todayISO, nowTime, nowYearMonth, APP_TIMEZONE, minutesBetween, normalizeTime, parseBreakMinutes, effectiveWorkStart, lateCheckInPenalty, autoLatePenaltyMinutes, normalizePenaltyMinutes } from '../utils/helpers.js';
+import { parseListQuery, listResponse, todayISO, nowTime, nowYearMonth, APP_TIMEZONE, minutesBetween, normalizeTime, parseBreakMinutes, effectiveWorkStart, lateCheckInPenalty, autoLatePenaltyMinutes, normalizePenaltyMinutes, timeToSeconds } from '../utils/helpers.js';
 import { applyEmployeeListScope } from '../utils/employeeScope.js';
 import { getEffectiveShiftForEmployee, resolveEffectiveShift } from '../services/shift.js';
 import { recalculateAttendanceFields } from '../services/attendanceCalc.js';
@@ -232,6 +232,29 @@ export async function checkOut(req, res) {
         const needMin = Math.ceil((MIN_COVER_HOURS - past) * 60);
         return res.status(400).json({
           message: `Cover time requires at least 45 minutes past daily hours. Stay about ${needMin} more minute(s) before checkout.`,
+        });
+      }
+    }
+
+    const approvedEarly = await EarlyCheckoutRequest.findOne({
+      employee_id: req.user._id,
+      date: rec.date,
+      status: 'Approved',
+    }).sort({ decided_at: -1, createdAt: -1 });
+
+    if (!approvedEarly) {
+      const shiftEndSec = timeToSeconds(shift.shift_end);
+      const nowSec = timeToSeconds(now);
+      if (shiftEndSec != null && nowSec != null && nowSec < shiftEndSec) {
+        return res.status(400).json({
+          message: 'Checkout is available after your shift ends. Request early checkout if you need to leave sooner.',
+        });
+      }
+
+      const workHours = liveWorkMinutes(rec, now, shift.shift_start, shift.late_buffer_minutes) / 60;
+      if (workHours + 1 / 120 < threshold) {
+        return res.status(400).json({
+          message: `Complete daily working hours (${threshold}h) before checkout, or request early checkout.`,
         });
       }
     }
