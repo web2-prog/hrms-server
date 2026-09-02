@@ -1,6 +1,7 @@
 import Leave from '../models/Leave.js';
 import { parseListQuery, listResponse } from '../utils/helpers.js';
 import { applyEmployeeListScope } from '../utils/employeeScope.js';
+import { assertCanDecideRequest } from '../utils/staffPermissions.js';
 import { recalculateMonthlySummary } from '../services/monthlyHours.js';
 import { datesInRange } from '../utils/helpers.js';
 
@@ -138,6 +139,8 @@ export async function decide(req, res) {
     if (!['Approved', 'Rejected'].includes(status)) return res.status(400).json({ message: 'Invalid status' });
     const leave = await Leave.findById(req.params.id);
     if (!leave) return res.status(404).json({ message: 'Not found' });
+    const gate = await assertCanDecideRequest(req.user, leave.employee_id);
+    if (gate.error) return res.status(gate.status).json({ message: gate.error });
     leave.status = status;
     leave.approved_by = req.user._id;
     leave.approved_on = new Date();

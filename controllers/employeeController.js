@@ -2,6 +2,7 @@ import Employee from '../models/Employee.js';
 import AuditLog from '../models/AuditLog.js';
 import { parseListQuery, listResponse, nextEmployeeId } from '../utils/helpers.js';
 import { clearEmployeeData } from '../services/clearData.js';
+import { isElevatedRole, resolveTargetEmployee } from '../utils/staffPermissions.js';
 import {
   ensureBondsArray,
   resolveCurrentSalary,
@@ -76,6 +77,19 @@ export async function update(req, res) {
     if (req.user.role === 'hr') {
       // HR cannot change role to admin or department structure fields beyond assignment
       delete req.body.role;
+    }
+    // HR may edit their own profile, but only Admin may edit other Admin/HR accounts.
+    if (req.user.role !== 'admin') {
+      const target = await resolveTargetEmployee(req.params.id);
+      if (
+        target &&
+        isElevatedRole(target.role) &&
+        String(target._id) !== String(req.user._id)
+      ) {
+        return res.status(403).json({
+          message: 'Only an admin can update admin or HR accounts.',
+        });
+      }
     }
     const updates = { ...req.body };
     if (req.file) updates.photo_url = `/uploads/${req.file.filename}`;
@@ -155,6 +169,13 @@ export async function resetPassword(req, res) {
   try {
     const emp = await Employee.findById(req.params.id).select('+password');
     if (!emp) return res.status(404).json({ message: 'Not found' });
+    if (req.user.role !== 'admin') {
+      if (isElevatedRole(emp.role) || String(emp._id) === String(req.user._id)) {
+        return res.status(403).json({
+          message: 'Only an admin can reset passwords for admin, HR, or your own account.',
+        });
+      }
+    }
     const { new_password } = req.body;
     if (!new_password || String(new_password).length < 6) {
       return res.status(400).json({ message: 'New password must be at least 6 characters' });

@@ -5,6 +5,7 @@ import { calculateSalaryDraft, SALARY_COMPANIES, mergeSalaryDraft, toPersistedSl
 import { buildPayslipForm } from '../services/payslipForm.js';
 import { parseListQuery, listResponse, isPastYearMonth } from '../utils/helpers.js';
 import { applyEmployeeListScope } from '../utils/employeeScope.js';
+import { assertCanActOnStaffRecord } from '../utils/staffPermissions.js';
 import { renderSalarySlipPdf, buildSalarySlipPdfBuffer } from '../services/salarySlipPdf.js';
 import { sendSalarySlipEmail } from '../services/emailService.js';
 
@@ -170,6 +171,9 @@ export async function generate(req, res) {
       return res.status(400).json({ message: err.message });
     }
 
+    const gate = await assertCanActOnStaffRecord(req.user, employee_id, 'generate salary');
+    if (gate.error) return res.status(gate.status).json({ message: gate.error });
+
     const existing = await SalarySlip.findOne({ employee_id, month, year });
     if (existing && existing.status === 'Finalized') {
       return res.status(400).json({ message: 'Finalized slip exists; reverse/reissue required' });
@@ -241,6 +245,9 @@ export async function finalize(req, res) {
     const slip = await SalarySlip.findById(req.params.id);
     if (!slip) return res.status(404).json({ message: 'Not found' });
     if (slip.status === 'Finalized') return res.status(400).json({ message: 'Already finalized' });
+
+    const gate = await assertCanActOnStaffRecord(req.user, slip.employee_id, 'finalize salary');
+    if (gate.error) return res.status(gate.status).json({ message: gate.error });
 
     // Re-check month-end shortfall decision before locking pay
     const draft = await calculateSalaryDraft(slip.employee_id, slip.month, slip.year, {
@@ -378,6 +385,9 @@ export async function updateAdjustments(req, res) {
     if (slip.status === 'Finalized') {
       return res.status(400).json({ message: 'Reverse the slip before editing values' });
     }
+
+    const gate = await assertCanActOnStaffRecord(req.user, slip.employee_id, 'adjust salary');
+    if (gate.error) return res.status(gate.status).json({ message: gate.error });
 
     if (req.body.reset) {
       const draft = await calculateSalaryDraft(slip.employee_id, slip.month, slip.year, {

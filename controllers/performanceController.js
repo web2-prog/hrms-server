@@ -3,6 +3,7 @@ import SalarySlip from '../models/SalarySlip.js';
 import AuditLog from '../models/AuditLog.js';
 import { parseListQuery, listResponse } from '../utils/helpers.js';
 import { applyShortfallDecision, recalculateMonthlySummary, isShortfallManagementActive } from '../services/monthlyHours.js';
+import { assertCanActOnStaffRecord } from '../utils/staffPermissions.js';
 import { getEffectiveShiftForEmployee } from '../services/shift.js';
 import { calculateSalaryDraft, mergeSalaryDraft, toPersistedSlipFields } from '../services/salaryCalc.js';
 
@@ -130,6 +131,9 @@ export async function decideShortfall(req, res) {
           'Salary Deduction / Carry Forward starts from August 2026. Earlier months are not managed this way.',
       });
     }
+
+    const gate = await assertCanActOnStaffRecord(req.user, employee_id, 'decide shortfall');
+    if (gate.error) return res.status(gate.status).json({ message: gate.error });
 
     const summary = await applyShortfallDecision(
       employee_id,

@@ -4,6 +4,7 @@ import EarlyCheckoutRequest from '../models/EarlyCheckoutRequest.js';
 import CoverTimeRequest, { MIN_COVER_HOURS } from '../models/CoverTimeRequest.js';
 import { parseListQuery, listResponse, todayISO, nowTime, nowYearMonth, APP_TIMEZONE, minutesBetween, normalizeTime, parseBreakMinutes, effectiveWorkStart, lateCheckInPenalty, autoLatePenaltyMinutes, normalizePenaltyMinutes, timeToSeconds } from '../utils/helpers.js';
 import { applyEmployeeListScope } from '../utils/employeeScope.js';
+import { assertCanDecideRequest, assertCanManageAttendanceTime } from '../utils/staffPermissions.js';
 import { getEffectiveShiftForEmployee, resolveEffectiveShift } from '../services/shift.js';
 import { recalculateAttendanceFields } from '../services/attendanceCalc.js';
 import { approvedLeaveFractionOnDate, dutyHoursFromShift } from '../services/leaveDuty.js';
@@ -418,9 +419,8 @@ export async function decideEarlyCheckoutRequest(req, res) {
     if (decision !== 'Approved' && decision !== 'Rejected') {
       return res.status(400).json({ message: 'status must be Approved or Rejected' });
     }
-    if (String(request.employee_id) === String(req.user._id)) {
-      return res.status(400).json({ message: 'You cannot decide your own early checkout request' });
-    }
+    const gate = await assertCanDecideRequest(req.user, request.employee_id);
+    if (gate.error) return res.status(gate.status).json({ message: gate.error });
     request.status = decision;
     request.decided_by = req.user._id;
     request.decided_at = new Date();
@@ -595,9 +595,8 @@ export async function decideCoverTimeRequest(req, res) {
     if (decision !== 'Approved' && decision !== 'Rejected') {
       return res.status(400).json({ message: 'status must be Approved or Rejected' });
     }
-    if (String(request.employee_id) === String(req.user._id)) {
-      return res.status(400).json({ message: 'You cannot decide your own cover time request' });
-    }
+    const gate = await assertCanDecideRequest(req.user, request.employee_id);
+    if (gate.error) return res.status(gate.status).json({ message: gate.error });
 
     // Prefer actual hours from checkout; if still open, use live excess capped at requested.
     const rec = await Attendance.findById(request.attendance_id);
@@ -737,6 +736,8 @@ export async function update(req, res) {
   try {
     const rec = await Attendance.findById(req.params.id);
     if (!rec) return res.status(404).json({ message: 'Not found' });
+    const gate = await assertCanManageAttendanceTime(req.user, rec.employee_id);
+    if (gate.error) return res.status(gate.status).json({ message: gate.error });
     const { check_in, check_out, break_total, break_started_at, penalty_waived, end_break } = req.body;
     if (check_in !== undefined) rec.check_in = normalizeTime(check_in);
     if (check_out !== undefined) {
@@ -887,6 +888,8 @@ export async function updateToday(req, res) {
     const employeeId = req.params.employeeId;
     const emp = await Employee.findById(employeeId);
     if (!emp) return res.status(404).json({ message: 'Employee not found' });
+    const gate = await assertCanManageAttendanceTime(req.user, emp);
+    if (gate.error) return res.status(gate.status).json({ message: gate.error });
 
     const date = req.body.date || todayISO();
     let rec = await Attendance.findOne({ employee_id: employeeId, date });
@@ -1019,6 +1022,8 @@ export async function bulkUpdate(req, res) {
     for (const u of updates) {
       const rec = await Attendance.findById(u.id);
       if (!rec) continue;
+      const gate = await assertCanManageAttendanceTime(req.user, rec.employee_id);
+      if (gate.error) continue;
       if (u.check_in !== undefined) rec.check_in = normalizeTime(u.check_in);
       if (u.check_out !== undefined) {
         rec.check_out = normalizeTime(u.check_out);

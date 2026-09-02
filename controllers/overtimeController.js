@@ -2,6 +2,7 @@ import OvertimeRequest from '../models/OvertimeRequest.js';
 import Attendance from '../models/Attendance.js';
 import { parseListQuery, listResponse } from '../utils/helpers.js';
 import { applyEmployeeListScope } from '../utils/employeeScope.js';
+import { assertCanDecideRequest } from '../utils/staffPermissions.js';
 import { recalculateMonthlySummary } from '../services/monthlyHours.js';
 
 function monthDateFilter(month, year) {
@@ -172,6 +173,8 @@ export async function decide(req, res) {
     if (doc.status !== 'Pending') {
       return res.status(400).json({ message: 'Request already decided' });
     }
+    const gate = await assertCanDecideRequest(req.user, doc.employee_id);
+    if (gate.error) return res.status(gate.status).json({ message: gate.error });
 
     if (status === 'Approved') {
       doc.ot_type = 'Management';
