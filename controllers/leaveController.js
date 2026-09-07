@@ -1,9 +1,21 @@
 import Leave from '../models/Leave.js';
+import Employee from '../models/Employee.js';
 import { parseListQuery, listResponse } from '../utils/helpers.js';
 import { applyEmployeeListScope } from '../utils/employeeScope.js';
-import { assertCanDecideRequest } from '../utils/staffPermissions.js';
+import { assertCanDecideRequest, assertCanActOnStaffRecord, isElevatedRole } from '../utils/staffPermissions.js';
 import { recalculateMonthlySummary } from '../services/monthlyHours.js';
 import { datesInRange } from '../utils/helpers.js';
+
+async function recalculateLeaveMonths(employeeId, fromDate, toDate) {
+  const months = new Set();
+  for (const d of datesInRange(fromDate, toDate)) {
+    months.add(`${d.slice(0, 4)}-${d.slice(5, 7)}`);
+  }
+  for (const key of months) {
+    const [y, m] = key.split('-').map(Number);
+    await recalculateMonthlySummary(employeeId, m, y);
+  }
+}
 
 export async function list(req, res) {
   try {
@@ -113,20 +125,54 @@ export async function list(req, res) {
 
 export async function apply(req, res) {
   try {
-    const { from_date, to_date, reason, day_type } = req.body;
+    const { from_date, to_date, reason, day_type, employee_id, status: bodyStatus } = req.body;
     if (!from_date || !to_date) return res.status(400).json({ message: 'Dates required' });
     const resolvedDayType = day_type === 'Half Day' ? 'Half Day' : 'Full Day';
     if (resolvedDayType === 'Half Day' && from_date !== to_date) {
       return res.status(400).json({ message: 'Half Day leave must be for a single date' });
     }
+
+    const to = resolvedDayType === 'Half Day' ? from_date : to_date;
+    const isStaff = isElevatedRole(req.user.role);
+    const wantsOtherEmployee = !!(employee_id && String(employee_id) !== String(req.user._id));
+
+    let targetId = req.user._id;
+    let status = 'Pending';
+    let approved_by = null;
+    let approved_on = null;
+
+    // HR/Admin can add a manual leave for another employee (default Approved).
+    if (isStaff && wantsOtherEmployee) {
+      const gate = await assertCanActOnStaffRecord(req.user, employee_id, 'add leave for');
+      if (gate.error) return res.status(gate.status).json({ message: gate.error });
+      const emp = await Employee.findById(employee_id).select('_id status').lean();
+      if (!emp) return res.status(404).json({ message: 'Employee not found' });
+      targetId = emp._id;
+      // Manual leave defaults to Approved; pass status=Pending to queue for decision.
+      status = bodyStatus === 'Pending' ? 'Pending' : 'Approved';
+      if (status === 'Approved') {
+        approved_by = req.user._id;
+        approved_on = new Date();
+      }
+    } else if (!isStaff && employee_id && String(employee_id) !== String(req.user._id)) {
+      return res.status(403).json({ message: 'Employees can only apply leave for themselves' });
+    }
+
     const leave = await Leave.create({
-      employee_id: req.user._id,
+      employee_id: targetId,
       from_date,
-      to_date: resolvedDayType === 'Half Day' ? from_date : to_date,
+      to_date: to,
       day_type: resolvedDayType,
       reason: reason || '',
-      status: 'Pending',
+      status,
+      approved_by,
+      approved_on,
     });
+
+    if (status === 'Approved') {
+      await recalculateLeaveMonths(targetId, from_date, to);
+    }
+
     res.status(201).json(leave);
   } catch (e) {
     res.status(400).json({ message: e.message });
@@ -147,14 +193,7 @@ export async function decide(req, res) {
     await leave.save();
 
     if (status === 'Approved') {
-      const months = new Set();
-      for (const d of datesInRange(leave.from_date, leave.to_date)) {
-        months.add(`${d.slice(0, 4)}-${d.slice(5, 7)}`);
-      }
-      for (const key of months) {
-        const [y, m] = key.split('-').map(Number);
-        await recalculateMonthlySummary(leave.employee_id, m, y);
-      }
+      await recalculateLeaveMonths(leave.employee_id, leave.from_date, leave.to_date);
     }
     res.json(leave);
   } catch (e) {

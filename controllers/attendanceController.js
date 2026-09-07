@@ -178,6 +178,16 @@ export async function checkIn(req, res) {
     if (isAtOrAfterAutoCheckout()) {
       return res.status(400).json({ message: 'Check-in is closed for today after 11:55 PM auto-checkout' });
     }
+    const shift = await getEffectiveShiftForEmployee(req.user._id);
+    const shiftStart = shift?.shift_start || '09:30';
+    const shiftStartSec = timeToSeconds(shiftStart);
+    const nowSec = timeToSeconds(nowTime());
+    // Block early check-in — option unlocks only at/after shift start.
+    if (shiftStartSec > 0 && nowSec < shiftStartSec) {
+      return res.status(400).json({
+        message: `Check-in is available after your shift starts at ${shiftStart}.`,
+      });
+    }
     const rec = await getOrCreateToday(req.user._id);
     if (rec.check_in) return res.status(400).json({ message: 'Already checked in' });
     rec.check_in = nowTime();
@@ -265,10 +275,13 @@ export async function checkOut(req, res) {
     }).sort({ decided_at: -1, createdAt: -1 });
 
     if (!approvedEarly) {
+      // Full-day: never allow checkout before shift_end (use dept default if missing).
+      // Half-day leave: hours gate only (no shift-end wait) — product rule for half duty.
       if (!duty.isHalfDay) {
-        const shiftEndSec = timeToSeconds(shift.shift_end);
+        const shiftEnd = shift.shift_end || '17:30';
+        const shiftEndSec = timeToSeconds(shiftEnd);
         const nowSec = timeToSeconds(now);
-        if (shiftEndSec != null && nowSec != null && nowSec < shiftEndSec) {
+        if (!(shiftEndSec > 0) || nowSec < shiftEndSec) {
           return res.status(400).json({
             message: 'Checkout is available after your shift ends. Request early checkout if you need to leave sooner.',
           });
@@ -344,6 +357,25 @@ export async function createEarlyCheckoutRequest(req, res) {
     const rec = await getOrCreateToday(req.user._id);
     if (!rec.check_in) return res.status(400).json({ message: 'Not checked in' });
     if (rec.check_out) return res.status(400).json({ message: 'Already checked out' });
+
+    const shift = await getEffectiveShiftForEmployee(req.user._id);
+    const duty = await attendanceDuty(req.user._id, rec.date, shift);
+    const now = nowTime();
+    const workHours = liveWorkMinutes(rec, now, shift.shift_start, shift.late_buffer_minutes) / 60;
+    const checkoutHours = Number(duty.expectedHours || shift.working_hours_per_day || 8.25);
+    const hoursMet = workHours + 1 / 120 >= checkoutHours;
+    let shiftEnded = !!duty.isHalfDay;
+    if (!duty.isHalfDay) {
+      const shiftEndSec = timeToSeconds(shift.shift_end || '17:30');
+      const nowSec = timeToSeconds(now);
+      shiftEnded = shiftEndSec > 0 && nowSec >= shiftEndSec;
+    }
+    if (shiftEnded && hoursMet) {
+      return res.status(400).json({
+        message: 'Normal checkout is already available. Use Check Out instead of early checkout.',
+      });
+    }
+
     const existing = await EarlyCheckoutRequest.findOne({
       employee_id: req.user._id,
       date: todayISO(),
@@ -356,7 +388,7 @@ export async function createEarlyCheckoutRequest(req, res) {
       employee_id: req.user._id,
       attendance_id: rec._id,
       date: todayISO(),
-      requested_time: nowTime(),
+      requested_time: now,
       reason,
       status: 'Pending',
     });
