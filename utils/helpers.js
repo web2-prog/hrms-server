@@ -52,13 +52,33 @@ export function timeToDecimal(t) {
 }
 
 /** Decimal hours to "H:MM:SS" */
+/**
+ * Decimal hours → compact duration for user-facing copy.
+ * 0.75 → "45m", 1.5 → "1h30m", 8.25 → "8h15m"
+ */
+export function formatHoursHm(d) {
+  if (d == null || Number.isNaN(Number(d))) return '—';
+  const sign = Number(d) < 0 ? '-' : '';
+  const totalMins = Math.round(Math.abs(Number(d) || 0) * 60);
+  const h = Math.floor(totalMins / 60);
+  const m = totalMins % 60;
+  if (h === 0 && m === 0) return `${sign}0m`;
+  if (h === 0) return `${sign}${m}m`;
+  if (m === 0) return `${sign}${h}h`;
+  return `${sign}${h}h${m}m`;
+}
+
+/** @deprecated Prefer formatHoursHm — kept as alias for older call sites */
 export function decimalToHM(d) {
-  const sign = d < 0 ? '-' : '';
-  const totalSec = Math.round(Math.abs(Number(d) || 0) * 3600);
-  const h = Math.floor(totalSec / 3600);
-  const m = Math.floor((totalSec % 3600) / 60);
-  const s = totalSec % 60;
-  return `${sign}${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+  return formatHoursHm(d);
+}
+
+export function hoursToMinutes(h) {
+  return Math.round(Number(h || 0) * 60);
+}
+
+export function minutesToHours(m) {
+  return Math.round((Number(m || 0) / 60) * 100) / 100;
 }
 
 /** Seconds between two "HH:MM" / "HH:MM:SS" times (can be fractional-safe integer) */

@@ -77,6 +77,7 @@ async function applyAutoCheckout(rec) {
     const excess = Math.max(0, Number(rec.working_hours || 0) - threshold);
     const actual = Math.round(Math.min(Number(activeCover.requested_hours) || 0, excess) * 10000) / 10000;
     activeCover.actual_cover_hours = actual;
+    activeCover.actual_cover_minutes = Math.round(actual * 60);
     await activeCover.save();
     await recalculateForDate(rec.employee_id, rec.date);
   }

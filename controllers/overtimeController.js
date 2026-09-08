@@ -1,6 +1,6 @@
 import OvertimeRequest from '../models/OvertimeRequest.js';
 import Attendance from '../models/Attendance.js';
-import { parseListQuery, listResponse, todayISO } from '../utils/helpers.js';
+import { parseListQuery, listResponse, todayISO, hoursToMinutes } from '../utils/helpers.js';
 import { applyEmployeeListScope } from '../utils/employeeScope.js';
 import { assertCanDecideRequest } from '../utils/staffPermissions.js';
 import { recalculateMonthlySummary } from '../services/monthlyHours.js';
@@ -16,27 +16,33 @@ function monthDateFilter(month, year) {
 
 function mapRequestRow(doc) {
   const json = typeof doc.toJSON === 'function' ? doc.toJSON() : doc;
+  const hours = Number(json.hours) || 0;
+  const minutes = json.minutes != null ? Number(json.minutes) : hoursToMinutes(hours);
   return {
     ...json,
     source: 'request',
-    hours: json.hours,
+    hours,
+    minutes,
   };
 }
 
 function mapAttendanceRow(doc) {
   const json = typeof doc.toJSON === 'function' ? doc.toJSON() : doc;
   const hours = Math.max(0, Number(json.surplus_shortfall) || 0);
+  const rounded = Math.round(hours * 10000) / 10000;
   return {
     _id: `att_${json._id}`,
     attendance_id: json._id,
     source: 'attendance',
     employee_id: json.employee_id,
     date: json.date,
-    hours: Math.round(hours * 10000) / 10000,
+    hours: rounded,
+    minutes: hoursToMinutes(rounded),
     reason: 'Auto (worked beyond daily hours)',
     status: 'Extra',
     ot_type: 'General',
     working_hours: json.working_hours,
+    working_minutes: hoursToMinutes(json.working_hours),
     applied_on: json.updatedAt || json.createdAt,
   };
 }
@@ -132,17 +138,27 @@ export async function eligibleHours(req, res) {
     res.json({
       date: split.date,
       hours: split.management_ot_hours,
+      minutes: split.management_ot_minutes ?? hoursToMinutes(split.management_ot_hours),
       eligible: !!split.management_ot_eligible,
       message: split.management_ot_eligible ? null : split.management_ot_message,
       work_hours: split.work_hours,
+      work_minutes: split.work_minutes,
       full_hours: split.full_hours,
+      full_minutes: split.full_minutes,
       checked_out: !!split.checked_out,
       daily_surplus: split.daily_surplus,
+      daily_surplus_minutes: split.daily_surplus_minutes,
       cover_hours: split.cover_hours,
+      cover_minutes: split.cover_minutes,
       management_ot_hours: split.management_ot_hours,
+      management_ot_minutes: split.management_ot_minutes,
       monthly_shortfall: split.monthly_shortfall,
+      monthly_shortfall_minutes: split.monthly_shortfall_minutes,
       cover_eligible: split.cover_eligible,
       min_cover_hours: split.min_cover_hours,
+      min_cover_minutes: split.min_cover_minutes,
+      claimed_cover_hours: split.claimed_cover_hours,
+      claimed_cover_minutes: hoursToMinutes(split.claimed_cover_hours),
     });
   } catch (e) {
     res.status(500).json({ message: e.message });
@@ -179,18 +195,27 @@ export async function apply(req, res) {
       });
     }
 
-    // Hours from surplus split (after Cover Time) — never from client.
+    // Hours = worked (through checkout / live now) − daily working hours − Cover Time.
+    // Never accept hours from the client body.
     const split = await computeSurplusSplit(req.user._id, date);
     if (!split.management_ot_eligible) {
       return res.status(400).json({
         message: split.management_ot_message || 'Management OT is not available',
       });
     }
+    if (!(split.management_ot_hours > 0)) {
+      return res.status(400).json({
+        message: 'No Management OT hours from daily working hours through checkout',
+      });
+    }
 
+    const hours = split.management_ot_hours;
+    const minutes = hoursToMinutes(hours);
     const doc = await OvertimeRequest.create({
       employee_id: req.user._id,
       date,
-      hours: split.management_ot_hours,
+      hours,
+      minutes,
       reason: String(reason).trim(),
       status: 'Pending',
       ot_type: 'Management',

@@ -2,7 +2,7 @@ import Attendance from '../models/Attendance.js';
 import Employee from '../models/Employee.js';
 import EarlyCheckoutRequest from '../models/EarlyCheckoutRequest.js';
 import CoverTimeRequest, { MIN_COVER_HOURS } from '../models/CoverTimeRequest.js';
-import { parseListQuery, listResponse, todayISO, nowTime, nowYearMonth, APP_TIMEZONE, minutesBetween, normalizeTime, parseBreakMinutes, effectiveWorkStart, lateCheckInPenalty, autoLatePenaltyMinutes, normalizePenaltyMinutes, timeToSeconds } from '../utils/helpers.js';
+import { parseListQuery, listResponse, todayISO, nowTime, nowYearMonth, APP_TIMEZONE, minutesBetween, normalizeTime, parseBreakMinutes, effectiveWorkStart, lateCheckInPenalty, autoLatePenaltyMinutes, normalizePenaltyMinutes, timeToSeconds, formatHoursHm, hoursToMinutes } from '../utils/helpers.js';
 import { applyEmployeeListScope } from '../utils/employeeScope.js';
 import { assertCanDecideRequest, assertCanManageAttendanceTime } from '../utils/staffPermissions.js';
 import { getEffectiveShiftForEmployee, resolveEffectiveShift } from '../services/shift.js';
@@ -295,8 +295,8 @@ export async function checkOut(req, res) {
       if (workHours + 1 / 120 < checkoutHours) {
         return res.status(400).json({
           message: duty.isHalfDay
-            ? `Complete half-day hours (${checkoutHours}h) before checkout, or request early checkout.`
-            : `Complete daily working hours (${checkoutHours}h) before checkout, or request early checkout.`,
+            ? `Complete half-day hours (${formatHoursHm(checkoutHours)}) before checkout, or request early checkout.`
+            : `Complete daily working hours (${formatHoursHm(checkoutHours)}) before checkout, or request early checkout.`,
         });
       }
     }
@@ -329,6 +329,7 @@ export async function checkOut(req, res) {
     if (activeCover && ['Pending', 'Approved'].includes(activeCover.status)) {
       const excess = Math.max(0, Number(rec.working_hours || 0) - threshold);
       activeCover.actual_cover_hours = roundHours(Math.min(Number(activeCover.requested_hours) || 0, excess));
+      activeCover.actual_cover_minutes = hoursToMinutes(activeCover.actual_cover_hours);
       await activeCover.save();
       await recalculateForDate(req.user._id, rec.date);
     }
@@ -531,6 +532,7 @@ export async function createCoverTimeRequest(req, res) {
       attendance_id: rec._id,
       date: todayISO(),
       requested_hours: split.cover_hours,
+      requested_minutes: hoursToMinutes(split.cover_hours),
       reason,
       status: 'Pending',
     });
@@ -541,6 +543,7 @@ export async function createCoverTimeRequest(req, res) {
       details: {
         date: request.date,
         requested_hours: request.requested_hours,
+        requested_minutes: request.requested_minutes,
         daily_surplus: split.daily_surplus,
         management_ot_remaining: split.management_ot_hours,
         reason,
@@ -560,14 +563,21 @@ export async function coverTimeEligible(req, res) {
     res.json({
       eligible: !!split.cover_eligible,
       hours: split.cover_hours,
+      minutes: split.cover_minutes ?? hoursToMinutes(split.cover_hours),
       pending_hours: split.monthly_shortfall,
+      pending_minutes: split.monthly_shortfall_minutes,
       past_daily_hours: split.daily_surplus,
+      past_daily_minutes: split.daily_surplus_minutes,
       full_hours: split.full_hours,
+      full_minutes: split.full_minutes,
       min_hours: split.min_cover_hours,
+      min_minutes: split.min_cover_minutes,
       message: split.cover_eligible ? null : split.cover_message,
       daily_surplus: split.daily_surplus,
       cover_hours: split.cover_hours,
+      cover_minutes: split.cover_minutes,
       management_ot_hours: split.management_ot_hours,
+      management_ot_minutes: split.management_ot_minutes,
       management_ot_eligible: split.management_ot_eligible,
     });
   } catch (e) {
@@ -647,12 +657,13 @@ export async function decideCoverTimeRequest(req, res) {
 
     if (decision === 'Approved' && actual + 0.001 < MIN_COVER_HOURS) {
       return res.status(400).json({
-        message: 'Cannot approve: employee has not completed at least 45 minutes of cover time yet.',
+        message: `Cannot approve: employee has not completed at least ${formatHoursHm(MIN_COVER_HOURS)} of cover time yet.`,
       });
     }
 
     request.status = decision;
     request.actual_cover_hours = decision === 'Approved' ? actual : 0;
+    request.actual_cover_minutes = hoursToMinutes(request.actual_cover_hours);
     request.decided_by = req.user._id;
     request.decided_at = new Date();
     request.decision_note = String(req.body.note || '').trim();
@@ -691,6 +702,7 @@ export async function cancelCoverTimeRequest(req, res) {
     }
     request.status = 'Cancelled';
     request.actual_cover_hours = 0;
+    request.actual_cover_minutes = 0;
     request.decided_by = req.user._id;
     request.decided_at = new Date();
     request.decision_note = 'Cancelled by employee';

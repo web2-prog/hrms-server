@@ -1,7 +1,7 @@
 import Employee from '../models/Employee.js';
 import SalarySlip from '../models/SalarySlip.js';
 import AuditLog from '../models/AuditLog.js';
-import { parseListQuery, listResponse } from '../utils/helpers.js';
+import { parseListQuery, listResponse, formatHoursHm } from '../utils/helpers.js';
 import { applyShortfallDecision, recalculateMonthlySummary, isShortfallManagementActive } from '../services/monthlyHours.js';
 import { assertCanActOnStaffRecord } from '../utils/staffPermissions.js';
 import { getEffectiveShiftForEmployee } from '../services/shift.js';
@@ -167,7 +167,7 @@ export async function decideShortfall(req, res) {
           custom_earnings: values.custom_earnings,
           custom_deductions: values.custom_deductions,
           status: 'Draft',
-          adjustment_note: `Salary deduction for ${draft.shortfall_hours}h shortfall.`,
+          adjustment_note: `Salary deduction for ${formatHoursHm(draft.shortfall_hours)} shortfall.`,
           generated_by: req.user._id,
           generated_on: new Date(),
         },

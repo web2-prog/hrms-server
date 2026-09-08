@@ -3,7 +3,7 @@ import Employee from '../models/Employee.js';
 import AuditLog from '../models/AuditLog.js';
 import { calculateSalaryDraft, SALARY_COMPANIES, mergeSalaryDraft, toPersistedSlipFields, applySalaryAdjustments, pickSalaryOverrides, computeSlipNetPay } from '../services/salaryCalc.js';
 import { buildPayslipForm } from '../services/payslipForm.js';
-import { parseListQuery, listResponse, isPastYearMonth } from '../utils/helpers.js';
+import { parseListQuery, listResponse, isPastYearMonth, formatHoursHm } from '../utils/helpers.js';
 import { applyEmployeeListScope } from '../utils/employeeScope.js';
 import { assertCanActOnStaffRecord } from '../utils/staffPermissions.js';
 import { renderSalarySlipPdf, buildSalarySlipPdfBuffer } from '../services/salarySlipPdf.js';
@@ -118,16 +118,11 @@ export async function getOne(req, res) {
   }
 }
 
-function formatPendingHours(hours) {
-  const n = Number(hours) || 0;
-  return Number.isInteger(n) ? String(n) : n.toFixed(2).replace(/\.?0+$/, '');
-}
-
 function finalizeBlockedMessage(draft, month, year) {
-  const hours = formatPendingHours(draft.pending_hours);
+  const hours = formatHoursHm(draft.pending_hours);
   const period = month && year ? ` for ${month}/${year}` : '';
   return (
-    `Cannot finalize yet: ${hours} hour(s) are still pending${period}. ` +
+    `Cannot finalize yet: ${hours} are still pending${period}. ` +
     `Open Performance and choose either "Salary Deduction" or "Carry Forward" for those hours, then try Finalize again.`
   );
 }
@@ -136,15 +131,15 @@ function shortfallNote(draft, adjustment_note) {
   if (adjustment_note) return adjustment_note;
   if (draft.needs_shortfall_decision && draft.pending_hours > 0) {
     return (
-      `${formatPendingHours(draft.pending_hours)}h pending — ` +
+      `${formatHoursHm(draft.pending_hours)} pending — ` +
       `choose Salary Deduction or Carry Forward on Performance before finalizing.`
     );
   }
   if (draft.shortfall_action === 'carry_forward' && draft.pending_hours > 0) {
-    return `${formatPendingHours(draft.pending_hours)}h pending carried forward to next month (no salary deduction).`;
+    return `${formatHoursHm(draft.pending_hours)} pending carried forward to next month (no salary deduction).`;
   }
   if (draft.shortfall_action === 'deduct' && draft.shortfall_hours > 0) {
-    return `Salary deduction for ${formatPendingHours(draft.shortfall_hours)}h shortfall.`;
+    return `Salary deduction for ${formatHoursHm(draft.shortfall_hours)} shortfall.`;
   }
   return '';
 }
@@ -306,9 +301,9 @@ export async function finalize(req, res) {
 
     if (req.body.adjustment_note) slip.adjustment_note = req.body.adjustment_note;
     else if (draft.shortfall_action === 'carry_forward' && draft.pending_hours > 0) {
-      slip.adjustment_note = `${draft.pending_hours}h pending carried forward to next month (no salary deduction).`;
+      slip.adjustment_note = `${formatHoursHm(draft.pending_hours)} pending carried forward to next month (no salary deduction).`;
     } else if (draft.shortfall_action === 'deduct' && draft.shortfall_hours > 0) {
-      slip.adjustment_note = `Salary deduction for ${draft.shortfall_hours}h shortfall.`;
+      slip.adjustment_note = `Salary deduction for ${formatHoursHm(draft.shortfall_hours)} shortfall.`;
     }
     if (req.body.net_pay != null) slip.net_pay = Number(req.body.net_pay);
     else slip.net_pay = values.net_pay;

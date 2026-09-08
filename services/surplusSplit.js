@@ -1,10 +1,16 @@
 /**
- * Daily surplus split: Cover Time first, then Management OT.
- * Same worked minutes must never count as both.
+ * Daily surplus for Cover Time + Management OT.
  *
- *   Daily Surplus = max(0, worked − daily target)
- *   Cover Time    = min(Daily Surplus, Remaining Monthly Shortfall)
- *   Management OT = Daily Surplus − Cover Time
+ *   Daily Surplus = max(0, worked − daily target)  // through checkout or live now
+ *
+ * Cover Time only consumes surplus when an actual Cover request exists for the day.
+ * Until then, Management OT can use the full surplus (worked past daily hours).
+ *
+ *   claimed_cover     = Pending/Approved cover hours for the day (else 0)
+ *   Management OT     = Daily Surplus − claimed_cover
+ *   Cover (potential) = min(Daily Surplus − claimed_mgmt_ot, monthly shortfall)
+ *
+ * Same worked minutes must never count as both once claimed.
  */
 import Attendance from '../models/Attendance.js';
 import CoverTimeRequest, { MIN_COVER_HOURS } from '../models/CoverTimeRequest.js';
@@ -15,6 +21,8 @@ import {
   nowYearMonth,
   minutesBetween,
   effectiveWorkStart,
+  formatHoursHm,
+  hoursToMinutes,
 } from '../utils/helpers.js';
 import { getEffectiveShiftForEmployee } from './shift.js';
 import { recalculateMonthlySummary } from './monthlyHours.js';
@@ -45,24 +53,38 @@ export function workMinutesFromAttendance(rec, now, shiftStart, lateBufferMinute
 }
 
 /**
- * Pure split given known surplus + shortfall + optional existing cover claim.
+ * Pure split given known surplus + shortfall + optional claimed cover / mgmt OT.
  * @param {number} dailySurplus
  * @param {number} monthlyShortfall pending monthly hours
  * @param {number|null} existingCoverHours Pending/Approved cover for this day (locks that slice)
+ * @param {number|null} existingMgmtOtHours Pending/Approved Management OT for this day
  */
-export function splitDailySurplus(dailySurplus, monthlyShortfall, existingCoverHours = null) {
+export function splitDailySurplus(
+  dailySurplus,
+  monthlyShortfall,
+  existingCoverHours = null,
+  existingMgmtOtHours = null
+) {
   const surplus = Math.max(0, Number(dailySurplus) || 0);
   const shortfall = Math.max(0, Number(monthlyShortfall) || 0);
+  const claimedCover =
+    existingCoverHours != null && Number(existingCoverHours) > 0
+      ? roundHours(Math.min(surplus, Number(existingCoverHours)))
+      : 0;
+  const claimedMgmt =
+    existingMgmtOtHours != null && Number(existingMgmtOtHours) > 0
+      ? roundHours(Math.min(surplus, Number(existingMgmtOtHours)))
+      : 0;
 
-  let cover_hours;
-  if (existingCoverHours != null && Number(existingCoverHours) > 0) {
-    // Already claimed cover for the day — do not re-allocate; Mgmt OT gets the rest.
-    cover_hours = roundHours(Math.min(surplus, Number(existingCoverHours)));
-  } else {
-    cover_hours = roundHours(Math.min(surplus, shortfall));
-  }
+  // Management OT = full surplus past daily hours, minus only an actual cover claim.
+  const management_ot_hours = roundHours(Math.max(0, surplus - claimedCover));
 
-  const management_ot_hours = roundHours(Math.max(0, surplus - cover_hours));
+  // Cover request size = leftover after any claimed Management OT, capped by shortfall.
+  // Do not pre-reserve cover against Management OT when neither is claimed.
+  const availableForCover = roundHours(Math.max(0, surplus - claimedMgmt));
+  const cover_hours = claimedCover > 0
+    ? claimedCover
+    : roundHours(Math.min(availableForCover, shortfall));
 
   return {
     daily_surplus: roundHours(surplus),
@@ -70,6 +92,8 @@ export function splitDailySurplus(dailySurplus, monthlyShortfall, existingCoverH
     cover_hours,
     management_ot_hours,
     remaining_surplus: management_ot_hours,
+    claimed_cover_hours: claimedCover,
+    claimed_management_ot_hours: claimedMgmt,
   };
 }
 
@@ -112,7 +136,6 @@ export async function computeSurplusSplit(employeeId, date = todayISO()) {
 
   const [y, m] = date.split('-').map(Number);
   const { month: curM, year: curY } = nowYearMonth();
-  // Shortfall for the attendance date's month (not always "current" calendar month in edge cases)
   const summary = await recalculateMonthlySummary(employeeId, m || curM, y || curY);
   const monthlyShortfall = Number(summary?.pending_hours || 0);
 
@@ -135,22 +158,30 @@ export async function computeSurplusSplit(employeeId, date = todayISO()) {
       : Number(activeCover.requested_hours) || 0
     : null;
 
-  const split = splitDailySurplus(dailySurplus, monthlyShortfall, existingCoverClaim);
+  const existingMgmtClaim = activeMgmtOt ? Number(activeMgmtOt.hours) || 0 : null;
+
+  const split = splitDailySurplus(
+    dailySurplus,
+    monthlyShortfall,
+    existingCoverClaim,
+    existingMgmtClaim
+  );
 
   const checkedIn = !!att?.check_in;
   const checkedOut = !!att?.check_out;
   const dailyTargetMet = workHours + 1 / 120 >= fullHours;
 
-  // Cover request: need shortfall + surplus slice ≥ 45m, no duplicate, still working.
+  // Cover: only while still working; needs shortfall + surplus; blocked if cover or mgmt already claimed full surplus.
   const cover_eligible =
     checkedIn &&
     !checkedOut &&
     dailyTargetMet &&
     !activeCover &&
+    !activeMgmtOt &&
     monthlyShortfall + 0.001 >= MIN_COVER_HOURS &&
     split.cover_hours + 0.001 >= MIN_COVER_HOURS;
 
-  // Management OT: remaining surplus after cover allocation; no duplicate.
+  // Management OT: surplus from daily hours through checkout/now, minus actual cover only.
   const management_ot_eligible =
     checkedIn &&
     !activeMgmtOt &&
@@ -160,27 +191,32 @@ export async function computeSurplusSplit(employeeId, date = todayISO()) {
   let cover_message = null;
   if (!checkedIn) cover_message = 'Check in first';
   else if (checkedOut) cover_message = 'Already checked out';
-  else if (!dailyTargetMet) cover_message = `Complete daily hours (${fullHours}h) first`;
+  else if (!dailyTargetMet) cover_message = `Complete daily hours (${formatHoursHm(fullHours)}) first`;
   else if (activeCover) cover_message = 'A cover time request is already active for this date';
-  else if (monthlyShortfall < MIN_COVER_HOURS - 0.001) {
+  else if (activeMgmtOt) {
+    cover_message = 'Management OT already requested for this date — surplus is not available for Cover Time';
+  } else if (monthlyShortfall < MIN_COVER_HOURS - 0.001) {
     cover_message = 'No monthly shortfall to cover';
   } else if (split.cover_hours + 0.001 < MIN_COVER_HOURS) {
-    cover_message = `Need at least ${MIN_COVER_HOURS * 60} minutes of surplus toward shortfall (cover slice ${Math.round(split.cover_hours * 60)}m)`;
+    cover_message = `Need at least ${formatHoursHm(MIN_COVER_HOURS)} of surplus toward shortfall (cover slice ${formatHoursHm(split.cover_hours)})`;
   }
 
   let management_ot_message = null;
   if (!checkedIn) {
-    management_ot_message = 'Check in and work beyond daily hours before requesting Management OT';
+    management_ot_message =
+      'Check in, complete daily working hours, and work through to checkout before requesting Management OT';
   } else if (activeMgmtOt) {
     management_ot_message =
       activeMgmtOt.status === 'Pending'
         ? 'A Management OT request is already pending for this date'
         : 'Management OT is already approved for this date';
   } else if (!dailyTargetMet || split.management_ot_hours < 0.01) {
-    if (split.cover_hours > 0.01 && split.daily_surplus > 0.01) {
-      management_ot_message = `Surplus is allocated to Cover Time first (${split.cover_hours}h). No remaining surplus for Management OT yet.`;
+    if (split.claimed_cover_hours > 0.01 && split.daily_surplus > 0.01) {
+      management_ot_message = `Cover Time already claimed ${formatHoursHm(split.claimed_cover_hours)} of today's surplus. No remaining Management OT.`;
     } else {
-      management_ot_message = `No Management OT yet. Work beyond ${fullHours}h; leftover after Cover Time becomes OT (currently ${roundHours(workHours)}h worked).`;
+      management_ot_message = checkedOut
+        ? `No Management OT for this day. Worked ${formatHoursHm(workHours)} through checkout vs daily ${formatHoursHm(fullHours)}.`
+        : `No Management OT yet. Work beyond ${formatHoursHm(fullHours)} through checkout (currently ${formatHoursHm(workHours)} worked).`;
     }
   }
 
@@ -188,17 +224,25 @@ export async function computeSurplusSplit(employeeId, date = todayISO()) {
     ok: true,
     date,
     work_hours: roundHours(workHours),
+    work_minutes: hoursToMinutes(workHours),
     full_hours: fullHours,
+    full_minutes: hoursToMinutes(fullHours),
     checked_in: checkedIn,
     checked_out: checkedOut,
     daily_target_met: dailyTargetMet,
     ...split,
+    daily_surplus_minutes: hoursToMinutes(split.daily_surplus),
+    cover_minutes: hoursToMinutes(split.cover_hours),
+    management_ot_minutes: hoursToMinutes(split.management_ot_hours),
+    monthly_shortfall_minutes: hoursToMinutes(split.monthly_shortfall),
     cover_eligible,
     management_ot_eligible,
     has_active_cover: !!activeCover,
     has_active_management_ot: !!activeMgmtOt,
     active_cover_hours: existingCoverClaim != null ? roundHours(existingCoverClaim) : 0,
+    active_cover_minutes: existingCoverClaim != null ? hoursToMinutes(existingCoverClaim) : 0,
     min_cover_hours: MIN_COVER_HOURS,
+    min_cover_minutes: hoursToMinutes(MIN_COVER_HOURS),
     cover_message,
     management_ot_message,
   };
