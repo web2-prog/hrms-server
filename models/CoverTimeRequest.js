@@ -13,7 +13,7 @@ const coverTimeRequestSchema = new mongoose.Schema(
     employee_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Employee', required: true, index: true },
     attendance_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Attendance', required: true },
     date: { type: String, required: true, index: true }, // YYYY-MM-DD
-    /** Hours the employee intends to cover (min 45m). */
+    /** Auto hours at request: surplus past daily target, capped by monthly shortfall (min 45m). */
     requested_hours: { type: Number, required: true, min: MIN_COVER_HOURS },
     /**
      * Hours actually worked past the daily target on checkout, capped at requested_hours.

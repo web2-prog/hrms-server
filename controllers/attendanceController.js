@@ -10,7 +10,8 @@ import { recalculateAttendanceFields } from '../services/attendanceCalc.js';
 import { approvedLeaveFractionOnDate, dutyHoursFromShift } from '../services/leaveDuty.js';
 import { recalculateForDate, recalculateMonthlySummary } from '../services/monthlyHours.js';
 import { closeStaleOpenSessions, isAtOrAfterAutoCheckout } from '../services/autoCheckout.js';
-import AuditLog from '../models/AuditLog.js';
+import { computeSurplusSplit } from '../services/surplusSplit.js';
+  import AuditLog from '../models/AuditLog.js';
 
 async function attendanceDuty(employeeId, date, shift) {
   const fraction = await approvedLeaveFractionOnDate(employeeId, date);
@@ -145,6 +146,7 @@ export async function myToday(req, res) {
           rec.penalty_minutes_override
         )
       : null;
+    const surplus_split = await computeSurplusSplit(req.user._id, rec.date);
     res.json({
       attendance: rec,
       shift,
@@ -152,6 +154,7 @@ export async function myToday(req, res) {
       early_checkout_request,
       cover_time_request,
       cover_time_min_hours: MIN_COVER_HOURS,
+      surplus_split,
       today_leave_day_type: duty.isHalfDay ? 'Half Day' : null,
       checkout_hours: duty.expectedHours,
       work_start,
@@ -511,59 +514,23 @@ export async function cancelEarlyCheckoutRequest(req, res) {
 export async function createCoverTimeRequest(req, res) {
   try {
     await closeStaleOpenSessions({ employeeId: req.user._id });
-    const rec = await getOrCreateToday(req.user._id);
-    if (!rec.check_in) return res.status(400).json({ message: 'Not checked in' });
-    if (rec.check_out) return res.status(400).json({ message: 'Already checked out' });
-
-    const shift = await getEffectiveShiftForEmployee(req.user._id);
-    const threshold = Number(shift.working_hours_per_day || 8.25);
-    const now = nowTime();
-    const workHours = liveWorkMinutes(rec, now, shift.shift_start, shift.late_buffer_minutes) / 60;
-    if (workHours + 1 / 120 < threshold) {
-      return res.status(400).json({
-        message: `Cover time can only be requested after completing daily working hours (${threshold}h).`,
-      });
-    }
-
-    const existing = await CoverTimeRequest.findOne({
-      employee_id: req.user._id,
-      date: todayISO(),
-      status: { $in: ['Pending', 'Approved'] },
-    });
-    if (existing) {
-      return res.status(400).json({ message: 'A cover time request is already active for today' });
-    }
-
-    const hrs = Number(req.body.hours ?? req.body.requested_hours);
-    if (!Number.isFinite(hrs) || hrs < MIN_COVER_HOURS) {
-      return res.status(400).json({
-        message: `Cover time must be at least ${MIN_COVER_HOURS * 60} minutes (0.75h)`,
-      });
-    }
-    if (hrs > 12) return res.status(400).json({ message: 'Cover time cannot exceed 12 hours' });
-
     const reason = String(req.body.reason || '').trim();
     if (!reason) return res.status(400).json({ message: 'Reason is required' });
 
-    const { month, year } = nowYearMonth();
-    const summary = await recalculateMonthlySummary(req.user._id, month, year);
-    const pending = Number(summary?.pending_hours || 0);
-    if (pending < MIN_COVER_HOURS - 0.001) {
+    // Hours from surplus split (Cover first) — never from client.
+    const split = await computeSurplusSplit(req.user._id, todayISO());
+    if (!split.cover_eligible) {
       return res.status(400).json({
-        message: 'No monthly shortfall hours to cover. Cover time is only for making up pending working hours.',
-      });
-    }
-    if (hrs > pending + 0.01) {
-      return res.status(400).json({
-        message: `You can cover at most ${roundHours(pending)}h (your current monthly shortfall).`,
+        message: split.cover_message || 'Cover time is not available',
       });
     }
 
+    const rec = await getOrCreateToday(req.user._id);
     const request = await CoverTimeRequest.create({
       employee_id: req.user._id,
       attendance_id: rec._id,
       date: todayISO(),
-      requested_hours: roundHours(hrs),
+      requested_hours: split.cover_hours,
       reason,
       status: 'Pending',
     });
@@ -571,9 +538,38 @@ export async function createCoverTimeRequest(req, res) {
       action: 'cover_time_requested',
       performed_by: req.user._id,
       target_employee_id: req.user._id,
-      details: { date: request.date, requested_hours: request.requested_hours, reason },
+      details: {
+        date: request.date,
+        requested_hours: request.requested_hours,
+        daily_surplus: split.daily_surplus,
+        management_ot_remaining: split.management_ot_hours,
+        reason,
+      },
     });
     res.status(201).json(request);
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+}
+
+/** Preview auto cover + remaining Management OT from surplus split. */
+export async function coverTimeEligible(req, res) {
+  try {
+    await closeStaleOpenSessions({ employeeId: req.user._id });
+    const split = await computeSurplusSplit(req.user._id, todayISO());
+    res.json({
+      eligible: !!split.cover_eligible,
+      hours: split.cover_hours,
+      pending_hours: split.monthly_shortfall,
+      past_daily_hours: split.daily_surplus,
+      full_hours: split.full_hours,
+      min_hours: split.min_cover_hours,
+      message: split.cover_eligible ? null : split.cover_message,
+      daily_surplus: split.daily_surplus,
+      cover_hours: split.cover_hours,
+      management_ot_hours: split.management_ot_hours,
+      management_ot_eligible: split.management_ot_eligible,
+    });
   } catch (e) {
     res.status(500).json({ message: e.message });
   }

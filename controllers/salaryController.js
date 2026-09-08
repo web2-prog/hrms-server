@@ -46,6 +46,15 @@ function resolveEmployeeEmail(employee) {
   return String(employee.email || '').trim();
 }
 
+/** Display/persist-safe money: drop legacy early-checkout / TDS auto-deductions from net. */
+function withoutRemovedSlipDeductions(slipLike) {
+  const o = { ...slipLike };
+  o.early_checkout_deduction_amount = 0;
+  o.tds = 0;
+  o.net_pay = computeSlipNetPay(o);
+  return o;
+}
+
 export async function list(req, res) {
   try {
     const { page, limit, skip, search } = parseListQuery(req.query);
@@ -68,7 +77,14 @@ export async function list(req, res) {
         .limit(limit),
       SalarySlip.countDocuments(filter),
     ]);
-    res.json(listResponse(data, total, page, limit));
+    const rows = data.map((s) => {
+      const o = s.toObject();
+      if (Number(o.early_checkout_deduction_amount) > 0 || Number(o.tds) > 0) {
+        return withoutRemovedSlipDeductions(o);
+      }
+      return o;
+    });
+    res.json(listResponse(rows, total, page, limit));
   } catch (e) {
     res.status(500).json({ message: e.message });
   }
@@ -87,6 +103,13 @@ export async function getOne(req, res) {
           message: 'This salary slip is not available yet. You can view it after HR/Admin sends it.',
         });
       }
+    }
+    // Heal legacy drafts that still store early-checkout / TDS as money.
+    if (Number(slip.early_checkout_deduction_amount) > 0 || Number(slip.tds) > 0) {
+      slip.early_checkout_deduction_amount = 0;
+      slip.tds = 0;
+      slip.net_pay = computeSlipNetPay(slip);
+      if (slip.status === 'Draft') await slip.save();
     }
     const payslip = await buildPayslipForm(slip.toObject());
     res.json({ ...slip.toObject(), payslip });

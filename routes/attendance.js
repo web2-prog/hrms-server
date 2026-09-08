@@ -14,6 +14,7 @@ router.post('/me/early-checkout-request/:id/cancel', authorize('admin', 'hr', 'e
 router.get('/early-checkout-requests', authorize('admin', 'hr', 'employee'), ctrl.listEarlyCheckoutRequests);
 router.post('/early-checkout-requests/:id/decide', authorize('admin', 'hr'), ctrl.decideEarlyCheckoutRequest);
 router.post('/me/cover-time-request', authorize('admin', 'hr', 'employee'), ctrl.createCoverTimeRequest);
+router.get('/me/cover-time-eligible', authorize('admin', 'hr', 'employee'), ctrl.coverTimeEligible);
 router.post('/me/cover-time-request/:id/cancel', authorize('admin', 'hr', 'employee'), ctrl.cancelCoverTimeRequest);
 router.get('/cover-time-requests', authorize('admin', 'hr', 'employee'), ctrl.listCoverTimeRequests);
 router.post('/cover-time-requests/:id/decide', authorize('admin', 'hr'), ctrl.decideCoverTimeRequest);

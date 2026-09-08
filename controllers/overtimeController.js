@@ -1,9 +1,10 @@
 import OvertimeRequest from '../models/OvertimeRequest.js';
 import Attendance from '../models/Attendance.js';
-import { parseListQuery, listResponse } from '../utils/helpers.js';
+import { parseListQuery, listResponse, todayISO } from '../utils/helpers.js';
 import { applyEmployeeListScope } from '../utils/employeeScope.js';
 import { assertCanDecideRequest } from '../utils/staffPermissions.js';
 import { recalculateMonthlySummary } from '../services/monthlyHours.js';
+import { computeSurplusSplit } from '../services/surplusSplit.js';
 
 function monthDateFilter(month, year) {
   if (!month || !year) return null;
@@ -52,7 +53,6 @@ export async function list(req, res) {
     const includeRequests = source === 'all' || source === 'requests' || source === 'request';
     const includeAttendance =
       (source === 'all' || source === 'attendance') &&
-      // Auto General OT (Extra) — skip when filtering Pending/Approved/Rejected only
       (!req.query.status || req.query.status === 'Extra') &&
       (!req.query.ot_type || req.query.ot_type === 'General' || req.query.ot_type === 'Attendance');
 
@@ -118,9 +118,41 @@ export async function list(req, res) {
   }
 }
 
+/** Preview: Management OT = remaining surplus after Cover Time allocation. */
+export async function eligibleHours(req, res) {
+  try {
+    const date = String(req.query.date || todayISO());
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      return res.status(400).json({ message: 'Use a valid date in YYYY-MM-DD format' });
+    }
+    if (date > todayISO()) {
+      return res.status(400).json({ message: 'Cannot request Management OT for a future date' });
+    }
+    const split = await computeSurplusSplit(req.user._id, date);
+    res.json({
+      date: split.date,
+      hours: split.management_ot_hours,
+      eligible: !!split.management_ot_eligible,
+      message: split.management_ot_eligible ? null : split.management_ot_message,
+      work_hours: split.work_hours,
+      full_hours: split.full_hours,
+      checked_out: !!split.checked_out,
+      daily_surplus: split.daily_surplus,
+      cover_hours: split.cover_hours,
+      management_ot_hours: split.management_ot_hours,
+      monthly_shortfall: split.monthly_shortfall,
+      cover_eligible: split.cover_eligible,
+      min_cover_hours: split.min_cover_hours,
+    });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+}
+
 export async function apply(req, res) {
   try {
-    const { date, hours, reason } = req.body;
+    const { reason } = req.body;
+    const date = String(req.body.date || todayISO());
     if (!date) return res.status(400).json({ message: 'Date required' });
     const match = String(date).match(/^(\d{4})-(\d{2})-(\d{2})$/);
     if (!match) return res.status(400).json({ message: 'Use a valid date in YYYY-MM-DD format' });
@@ -134,12 +166,12 @@ export async function apply(req, res) {
       return res.status(400).json({ message: 'Use a valid calendar date' });
     }
     if (!reason || !String(reason).trim()) return res.status(400).json({ message: 'Reason required' });
-    const hrs = Number(hours);
-    if (!hrs || hrs <= 0) return res.status(400).json({ message: 'Hours must be greater than 0' });
-    if (hrs > 24) return res.status(400).json({ message: 'Hours cannot exceed 24' });
 
     const year = Number(yy);
     if (year < 2026) return res.status(400).json({ message: 'Year must be 2026 or later' });
+    if (date > todayISO()) {
+      return res.status(400).json({ message: 'Cannot request Management OT for a future date' });
+    }
 
     if (req.body.ot_type && req.body.ot_type !== 'Management') {
       return res.status(400).json({
@@ -147,10 +179,18 @@ export async function apply(req, res) {
       });
     }
 
+    // Hours from surplus split (after Cover Time) — never from client.
+    const split = await computeSurplusSplit(req.user._id, date);
+    if (!split.management_ot_eligible) {
+      return res.status(400).json({
+        message: split.management_ot_message || 'Management OT is not available',
+      });
+    }
+
     const doc = await OvertimeRequest.create({
       employee_id: req.user._id,
       date,
-      hours: Math.round(hrs * 100) / 100,
+      hours: split.management_ot_hours,
       reason: String(reason).trim(),
       status: 'Pending',
       ot_type: 'Management',

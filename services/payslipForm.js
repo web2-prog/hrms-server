@@ -88,13 +88,13 @@ export async function computeYtdForSlip(employeeId, month, year, current) {
   const ytd_leave_deduction = round2(
     sum('leave_deduction_amount') + (Number(current.leave_deduction_amount) || 0)
   );
-  const ytd_early_checkout_deduction = round2(
-    sum('early_checkout_deduction_amount') + (Number(current.early_checkout_deduction_amount) || 0)
-  );
+  // Early checkout is no longer an auto deduction line; keep YTD field at 0 for compatibility.
+  const ytd_early_checkout_deduction = 0;
   const ytd_bond_security = round2(
     sum('bond_security_deduction') + (Number(current.bond_security_deduction) || 0)
   );
-  const ytd_tds = round2(sum('tds') + (Number(current.tds) || 0));
+  // TDS is no longer a slip deduction line; keep YTD field at 0 for compatibility.
+  const ytd_tds = 0;
   const ytd_custom_earnings = round2(custom_earnings.reduce((s, i) => s + (Number(i.ytd) || 0), 0));
   const ytd_custom_deductions = round2(
     custom_deductions.reduce((s, i) => s + (Number(i.ytd) || 0), 0)
@@ -130,9 +130,7 @@ export async function computeYtdForSlip(employeeId, month, year, current) {
   const ytd_total_deductions = round2(
     ytd_shortfall_deduction +
       ytd_leave_deduction +
-      ytd_early_checkout_deduction +
       ytd_bond_security +
-      ytd_tds +
       ytd_custom_deductions +
       priorCustomDedExtra
   );
@@ -163,19 +161,23 @@ export async function buildPayslipForm(slip) {
   const basic = Number(slip.base_salary) || 0;
   const overtime = Number(slip.overtime_amount) || 0;
   const shortfall = Number(slip.deduction_amount) || 0;
-  const leaveDeduction = Number(slip.leave_deduction_amount) || 0;
-  const earlyCheckoutDeduction = Number(slip.early_checkout_deduction_amount) || 0;
+  const lopDays = Number(slip.lop_days) || 0;
+  let leaveDeduction = Number(slip.leave_deduction_amount) || 0;
+  // Keep LOP line visible/consistent when days are set but amount was zeroed (legacy drafts).
+  if (lopDays > 0 && leaveDeduction <= 0 && basic > 0) {
+    leaveDeduction = round2(lopDays * (basic / 30.42));
+  }
+  const earlyCheckoutDeduction = 0;
   const earlyCheckoutMinutes = Number(slip.early_checkout_minutes) || 0;
   const bond = Number(slip.bond_security_deduction) || 0;
-  const tds = Number(slip.tds) || 0;
+  const tds = 0;
   const customEarnings = ytd.custom_earnings || [];
   const customDeductions = ytd.custom_deductions || [];
   const extraEarn = round2(customEarnings.reduce((s, i) => s + (Number(i.amount) || 0), 0));
   const extraDed = round2(customDeductions.reduce((s, i) => s + (Number(i.amount) || 0), 0));
   const gross = round2(basic + overtime + extraEarn);
-  const totalDeductions = round2(
-    shortfall + leaveDeduction + earlyCheckoutDeduction + bond + tds + extraDed
-  );
+  // Never include early checkout or TDS money in totals.
+  const totalDeductions = round2(shortfall + leaveDeduction + bond + extraDed);
   const net = round2(gross - totalDeductions);
 
   const targetHours = Number(slip.monthly_target_hours) || 0;
@@ -208,7 +210,7 @@ export async function buildPayslipForm(slip) {
     uan: slip.uan || 'NA',
     paidDays: Number(slip.paid_days) || 0,
     leaveDays: Number(slip.leave_days) || 0,
-    lopDays: Number(slip.lop_days) || 0,
+    lopDays,
     workingDays: Number(slip.working_days) || 0,
     month: Number(slip.month) || 0,
     year: Number(slip.year) || 0,
@@ -219,7 +221,9 @@ export async function buildPayslipForm(slip) {
     shortfallDeduction: shortfall,
     ytdShortfallDeduction: ytd.ytd_shortfall_deduction,
     leaveDeduction,
-    ytdLeaveDeduction: ytd.ytd_leave_deduction,
+    ytdLeaveDeduction: round2(
+      ytd.ytd_leave_deduction - (Number(slip.leave_deduction_amount) || 0) + leaveDeduction
+    ),
     earlyCheckoutMinutes,
     earlyCheckoutDeduction,
     ytdEarlyCheckoutDeduction: ytd.ytd_early_checkout_deduction,
@@ -233,9 +237,14 @@ export async function buildPayslipForm(slip) {
     grossEarnings: gross,
     ytdGrossEarnings: ytd.ytd_gross_earnings,
     totalDeductions,
-    ytdTotalDeductions: ytd.ytd_total_deductions,
-    netPay: Number(slip.net_pay) != null ? round2(slip.net_pay) : net,
-    ytdNetPay: ytd.ytd_net_pay,
+    ytdTotalDeductions: round2(
+      ytd.ytd_total_deductions - (Number(slip.leave_deduction_amount) || 0) + leaveDeduction
+    ),
+    netPay: net,
+    ytdNetPay: round2(
+      ytd.ytd_gross_earnings -
+        (ytd.ytd_total_deductions - (Number(slip.leave_deduction_amount) || 0) + leaveDeduction)
+    ),
     targetHours,
     countedHours,
     overtimeHours,

@@ -56,24 +56,22 @@ export function dailySalaryRate(baseSalary) {
   return base > 0 ? round2(base / SALARY_DAYS_PER_MONTH) : 0;
 }
 
-const STRING_OVERRIDE_FIELDS = new Set(['pay_date', 'pf_no', 'uan']);
+const STRING_OVERRIDE_FIELDS = new Set(['pay_date']);
 
-/** Money / display fields HR/Admin may override on a draft slip (base_salary is set from employee profile only). */
+/** Money / display fields HR/Admin may override on a draft slip. */
 export const SALARY_OVERRIDE_FIELDS = [
+  'base_salary',
   'overtime_amount',
   'overtime_hours',
   'deduction_amount',
   'leave_deduction_amount',
-  'early_checkout_deduction_amount',
+  // early_checkout_deduction_amount / tds / pf_no / uan removed from slip UI
   'bond_security_deduction',
   'bond_security_percent',
-  'tds',
   'paid_days',
   'leave_days',
   'lop_days',
   'pay_date',
-  'pf_no',
-  'uan',
 ];
 
 export function sanitizeLineItems(items) {
@@ -109,15 +107,14 @@ export function customLinesTotal(items) {
 }
 
 export function computeSlipNetPay(parts) {
+  // Early checkout and TDS are not slip deduction lines — use custom_deductions if needed.
   return round2(
     (Number(parts.base_salary) || 0) +
       (Number(parts.overtime_amount) || 0) +
       customLinesTotal(parts.custom_earnings) -
       (Number(parts.deduction_amount) || 0) -
       (Number(parts.leave_deduction_amount) || 0) -
-      (Number(parts.early_checkout_deduction_amount) || 0) -
       (Number(parts.bond_security_deduction) || 0) -
-      (Number(parts.tds) || 0) -
       customLinesTotal(parts.custom_deductions)
   );
 }
@@ -125,10 +122,14 @@ export function computeSlipNetPay(parts) {
 export function applySalaryAdjustments(draft, overrides = {}, extras = {}) {
   const next = { ...draft };
   const applied = pickSalaryOverrides(overrides);
-  delete applied.base_salary;
+  // Never auto-apply early checkout / TDS as money lines; strip legacy overrides.
+  delete applied.early_checkout_deduction_amount;
+  delete applied.tds;
   for (const [key, value] of Object.entries(applied)) {
     next[key] = value;
   }
+  next.early_checkout_deduction_amount = 0;
+  next.tds = 0;
   next.custom_earnings = sanitizeLineItems(
     extras.custom_earnings !== undefined ? extras.custom_earnings : draft.custom_earnings
   );
@@ -195,9 +196,8 @@ async function computeLopDays(employeeId, month, year) {
 }
 
 /**
- * Early-checkout salary line uses approved EarlyCheckoutRequest records only.
- * Leaving early without an approved request is reflected in Low / shortfall hours,
- * not as a separate early-checkout deduction.
+ * Early-checkout minutes are tracked for reporting only.
+ * They are NOT auto-deducted on the salary slip — HR uses custom_deductions instead.
  */
 async function computeEarlyCheckoutStats(employeeId, month, year) {
   const shift = await getEffectiveShiftForEmployee(employeeId);
@@ -233,20 +233,19 @@ export async function calculateSalaryDraft(employeeId, month, year, options = {}
   const lop_days = await computeLopDays(employeeId, month, year);
   const leave_days = round2(summary?.approved_leave_days_in_month || 0);
   const paid_days = Math.max(0, round2(working_days - lop_days));
+  // Keep minutes for attendance reporting only — no auto salary deduction for early checkout.
+  // HR adds any related amount via custom_deductions (+ Add Deduction on the slip).
   const early_checkout_stats = await computeEarlyCheckoutStats(employeeId, month, year);
   const early_checkout_minutes = early_checkout_stats.minutes;
+  const early_checkout_deduction_amount = 0;
 
   // Per-day rate for unpaid leave: salary / 30.42 (not working days)
   const daily_rate = dailySalaryRate(base);
   const leave_deduction_amount = round2(lop_days * daily_rate);
-  const early_checkout_hours = early_checkout_minutes / 60;
-  const early_checkout_deduction_amount = early_checkout_hours * deduction_rate;
 
-  // Shortfall hours deduction (Performance → Salary Deduction). The monthly
-  // shortfall already includes the hours lost to early checkout, so exclude
-  // those here — they are charged on the early-checkout line above. Each
-  // unworked hour is deducted exactly once.
-  const shortfall_deductible = Math.max(0, round2(shortfall - early_checkout_stats.shortfall_hours));
+  // Shortfall hours deduction (Performance → Salary Deduction). Full shortfall
+  // when action is deduct — early leave is not a separate slip line anymore.
+  const shortfall_deductible = round2(shortfall);
   const deduction_amount = shortfall_deductible * deduction_rate;
   const overtime_amount = overtime * overtime_rate;
 
@@ -255,7 +254,7 @@ export async function calculateSalaryDraft(employeeId, month, year, options = {}
   const bond_security_percent = resolveSalaryDeductionPercent(salaryBond);
   const bond_security_deduction = bond_security_percent > 0 ? (base * bond_security_percent) / 100 : 0;
 
-  const tds = Number(options.tds) || 0;
+  const tds = 0;
   const custom_earnings = sanitizeLineItems(options.custom_earnings);
   const custom_deductions = sanitizeLineItems(options.custom_deductions);
   const net_pay = computeSlipNetPay({

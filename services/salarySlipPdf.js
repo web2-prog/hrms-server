@@ -122,7 +122,6 @@ function drawSalarySlipPdf(doc, form) {
     ['Employee Name', form.empName || '—'],
     ['Designation', form.designation || '—'],
     ['Employee ID', form.empNo || '—'],
-    ['Date of Joining', form.doj || '—'],
     ['Pay Period', `${monthLabel} ${form.year}`],
     ['Pay Date', form.payDate || '—'],
   ];
@@ -136,7 +135,7 @@ function drawSalarySlipPdf(doc, form) {
 
   const cardX = left + width - 170;
   const cardY = y;
-  const cardH = 122;
+  const cardH = 88;
   doc.roundedRect(cardX, cardY, 170, cardH, 4).strokeColor('#d5d5d5').stroke();
   doc.rect(cardX, cardY, 170, 52).fill('#dbeafe');
   doc
@@ -152,37 +151,10 @@ function drawSalarySlipPdf(doc, form) {
   doc
     .fillColor('#888888')
     .fontSize(8)
-    .text(`Paid Days                 ${form.paidDays ?? 0}`, cardX + 10, cardY + 58, { width: 150 });
-  doc.text(`Total Approved Leave   ${form.leaveDays ?? 0}`, cardX + 10, cardY + 70, { width: 150 });
-  doc.text(`Leave Deduction Days  ${form.lopDays ?? 0}`, cardX + 10, cardY + 82, { width: 150 });
-  doc.text(
-    `Early Checkout          ${Math.round(Number(form.earlyCheckoutMinutes) || 0)} min`,
-    cardX + 10,
-    cardY + 94,
-    { width: 150 }
-  );
+    .text(`Paid Days                         ${form.paidDays ?? 0}`, cardX + 10, cardY + 58, { width: 150 });
+  doc.text(`LOP                                  ${form.lopDays ?? 0}`, cardX + 10, cardY + 70, { width: 150 });
 
   y = Math.max(dy, cardY + cardH + 12);
-  doc.moveTo(left, y).lineTo(right, y).strokeColor('#e8e8e8').stroke();
-  y += 12;
-
-  doc
-    .fontSize(10)
-    .fillColor('#888888')
-    .font('Helvetica')
-    .text(`PF A/C Number : `, left, y, { continued: true })
-    .fillColor('#1a1a1a')
-    .font('Helvetica-Bold')
-    .text(form.pfNo || 'NA', { continued: false });
-  doc
-    .fontSize(10)
-    .fillColor('#888888')
-    .font('Helvetica')
-    .text(`UAN : `, left + 220, y, { continued: true })
-    .fillColor('#1a1a1a')
-    .font('Helvetica-Bold')
-    .text(form.uan || 'NA');
-  y += 20;
   doc.moveTo(left, y).lineTo(right, y).dash(3, { space: 2 }).strokeColor('#d0d0d0').stroke();
   doc.undash();
   y += 14;
@@ -223,16 +195,11 @@ function drawSalarySlipPdf(doc, form) {
       ytd: form.ytdShortfallDeduction,
     });
   }
-  deductions.push({
-    label: `Leave Deduction (${Number(form.lopDays) || 0} LOP day${Number(form.lopDays) === 1 ? '' : 's'})`,
-    amount: form.leaveDeduction || 0,
-    ytd: form.ytdLeaveDeduction || 0,
-  });
-  if (form.earlyCheckoutDeduction > 0) {
+  if ((Number(form.leaveDeduction) || 0) > 0 || (Number(form.lopDays) || 0) > 0) {
     deductions.push({
-      label: `Early Checkout Deduction (${Math.round(Number(form.earlyCheckoutMinutes) || 0)} min)`,
-      amount: form.earlyCheckoutDeduction,
-      ytd: form.ytdEarlyCheckoutDeduction,
+      label: `Leave Deduction (${Number(form.lopDays) || 0} LOP day${Number(form.lopDays) === 1 ? '' : 's'})`,
+      amount: form.leaveDeduction || 0,
+      ytd: form.ytdLeaveDeduction || 0,
     });
   }
   if (form.bondSecurity > 0) {
@@ -243,10 +210,10 @@ function drawSalarySlipPdf(doc, form) {
       ytd: form.ytdBondSecurity,
     });
   }
-  deductions.push({ label: 'TDS', amount: form.tds || 0, ytd: form.ytdTds || 0 });
   for (const item of form.customDeductions || []) {
+    if (!item?.label && !(Number(item?.amount) > 0)) continue;
     deductions.push({
-      label: item.label,
+      label: item.label || 'Manual Deduction',
       amount: item.amount,
       ytd: item.ytd ?? item.amount,
     });
@@ -299,7 +266,7 @@ function drawSalarySlipPdf(doc, form) {
     .font('Helvetica')
     .fontSize(8)
     .text('Gross Earnings - Total Deductions', left + 12, y + 26);
-  doc.roundedRect(right - 140, y + 10, 128, 28, 3).fill('#e6f4ea');
+  doc.roundedRect(right - 140, y + 10, 128, 28, 3).fill('#dbeafe');
   doc
     .fillColor('#1a1a1a')
     .font('Helvetica-Bold')
