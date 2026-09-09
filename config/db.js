@@ -28,6 +28,55 @@ function preferReliableDns() {
   }
 }
 
+/** Force public resolvers for an SRV/DNS retry attempt. */
+function forcePublicResolvers() {
+  try {
+    const servers = dns.getServers();
+    dns.setServers([...PUBLIC_DNS, ...servers.filter((s) => !PUBLIC_DNS.includes(s))]);
+    dns.setDefaultResultOrder('ipv4first');
+  } catch {
+    // Host DNS stays as-is
+  }
+}
+
+/** True when the connection error is a DNS/SRV resolution failure worth retrying. */
+function isSrvDnsFailure(err) {
+  const msg = String((err && (err.message || (err.cause && err.cause.message))) || '');
+  return /querySrv|getaddrinfo|ENOTFOUND|EAI_AGAIN/i.test(msg);
+}
+
+/** Atlas free/shared tiers often surface IP denials as TLS alert 80. */
+function isTlsAlert80(err) {
+  const msg = String((err && (err.message || (err.cause && err.cause.message))) || '');
+  return /tlsv1 alert internal error|SSL alert number 80|ERR_SSL_TLSV1_ALERT_INTERNAL_ERROR/i.test(msg);
+}
+
+async function hintAtlasNetworkAccess(err) {
+  if (!isTlsAlert80(err) || process.env.VERCEL) return;
+  let publicIp = '(unknown)';
+  try {
+    const res = await fetch('https://api.ipify.org?format=json', { signal: AbortSignal.timeout(4000) });
+    if (res.ok) {
+      const data = await res.json();
+      if (data?.ip) publicIp = data.ip;
+    }
+  } catch {
+    // ignore
+  }
+  console.error(`
+MongoDB Atlas TLS handshake failed (alert 80).
+On free/shared clusters this almost always means your current IP is not in
+Network Access allowlist.
+
+  Your public IP right now: ${publicIp}
+  Fix: Atlas → Network Access → Add IP Address
+       → Add Current IP Address  (or ${publicIp}/32)
+       → or temporarily Allow Access from Anywhere (0.0.0.0/0)
+
+  https://cloud.mongodb.com/v2#/security/network/whitelist
+`);
+}
+
 function connectOptions(dbName) {
   const prod = process.env.NODE_ENV === 'production';
   return {
@@ -39,6 +88,9 @@ function connectOptions(dbName) {
     maxPoolSize: prod ? 20 : 10,
     retryWrites: true,
     family: 4,
+    // Node 18+ happy-eyeballs can pick a path Atlas free-tier rejects with
+    // TLS alert 80; disable auto family selection (common Atlas+Node fix).
+    autoSelectFamily: false,
   };
 }
 
@@ -50,9 +102,33 @@ async function openConnection() {
   preferReliableDns();
 
   console.log(`Connecting to MongoDB: ${dbName}`);
-  await mongoose.connect(uri, connectOptions(dbName));
-  console.log(`MongoDB connected: ${dbName}`);
-  return mongoose.connection;
+  const options = connectOptions(dbName);
+  const useSrv = uri.startsWith('mongodb+srv://');
+
+  try {
+    await mongoose.connect(uri, options);
+    console.log(`MongoDB connected: ${dbName}`);
+    return mongoose.connection;
+  } catch (err) {
+    // querySrv refused / hostname not found — retry once through public resolvers
+    if (useSrv && isSrvDnsFailure(err)) {
+      console.warn(
+        `MongoDB SRV/DNS lookup failed (${err.message}) — retrying via public resolvers (8.8.8.8/1.1.1.1)`
+      );
+      forcePublicResolvers();
+      try {
+        await mongoose.disconnect().catch(() => {});
+        await mongoose.connect(uri, options);
+        console.log(`MongoDB connected: ${dbName}`);
+        return mongoose.connection;
+      } catch (retryErr) {
+        await hintAtlasNetworkAccess(retryErr);
+        throw retryErr;
+      }
+    }
+    await hintAtlasNetworkAccess(err);
+    throw err;
+  }
 }
 
 /**

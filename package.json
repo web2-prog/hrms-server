@@ -18,6 +18,7 @@
     "remigrate:august": "node scripts/remigrateAugustHrms.js",
     "set:late-buffer": "node scripts/setLateBuffer0905.js",
     "sync:recent": "node scripts/syncHrmsRecentDays.js",
+    "sync:passwords": "node scripts/syncHrmsPasswords.js",
     "sync:overtime": "node scripts/syncHrmsOvertime.js",
     "verify:sync": "node scripts/verifyRecentSync.js",
     "set:leaves": "node scripts/setLeavesFromSheet.js"

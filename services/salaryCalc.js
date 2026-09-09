@@ -48,15 +48,20 @@ export function round2(n) {
   return Math.round((Number(n) || 0) * 100) / 100;
 }
 
-/** Fixed calendar divisor for per-day salary (leave / LOP deductions). */
-export const SALARY_DAYS_PER_MONTH = 30.42;
+/** Average days per month (365 ÷ 12) — LOP per-day rate = monthly salary ÷ this. */
+export const LOP_DAYS_PER_MONTH = 30.42;
+export const SALARY_DAYS_PER_MONTH = LOP_DAYS_PER_MONTH;
+
+export function lopDailyRate(baseSalary) {
+  return (Number(baseSalary) || 0) / LOP_DAYS_PER_MONTH;
+}
 
 export function dailySalaryRate(baseSalary) {
   const base = Number(baseSalary) || 0;
-  return base > 0 ? round2(base / SALARY_DAYS_PER_MONTH) : 0;
+  return base > 0 ? round2(lopDailyRate(base)) : 0;
 }
 
-const STRING_OVERRIDE_FIELDS = new Set(['pay_date']);
+const STRING_OVERRIDE_FIELDS = new Set(['pay_date', 'pf_no', 'uan']);
 
 /** Money / display fields HR/Admin may override on a draft slip. */
 export const SALARY_OVERRIDE_FIELDS = [

@@ -135,7 +135,7 @@ function drawSalarySlipPdf(doc, form) {
 
   const cardX = left + width - 170;
   const cardY = y;
-  const cardH = 88;
+  const cardH = 90;
   doc.roundedRect(cardX, cardY, 170, cardH, 4).strokeColor('#d5d5d5').stroke();
   doc.rect(cardX, cardY, 170, 52).fill('#dbeafe');
   doc
@@ -151,8 +151,8 @@ function drawSalarySlipPdf(doc, form) {
   doc
     .fillColor('#888888')
     .fontSize(8)
-    .text(`Paid Days                         ${form.paidDays ?? 0}`, cardX + 10, cardY + 58, { width: 150 });
-  doc.text(`LOP                                  ${form.lopDays ?? 0}`, cardX + 10, cardY + 70, { width: 150 });
+    .text(`Paid Days                 ${form.paidDays ?? 0}`, cardX + 10, cardY + 58, { width: 150 });
+  doc.text(`LOP                      ${form.leaveDays ?? 0}`, cardX + 10, cardY + 70, { width: 150 });
 
   y = Math.max(dy, cardY + cardH + 12);
   doc.moveTo(left, y).lineTo(right, y).dash(3, { space: 2 }).strokeColor('#d0d0d0').stroke();
@@ -180,44 +180,17 @@ function drawSalarySlipPdf(doc, form) {
 
   const earnings = [
     { label: 'Basic', amount: form.basic, ytd: form.ytdBasic },
-    ...(form.overtime > 0 ? [{ label: 'Overtime', amount: form.overtime, ytd: form.ytdOvertime }] : []),
     ...((form.customEarnings || []).map((item) => ({
       label: item.label,
       amount: item.amount,
       ytd: item.ytd ?? item.amount,
     }))),
   ];
-  const deductions = [];
-  if (form.shortfallDeduction > 0) {
-    deductions.push({
-      label: 'Shortfall Deduction',
-      amount: form.shortfallDeduction,
-      ytd: form.ytdShortfallDeduction,
-    });
-  }
-  if ((Number(form.leaveDeduction) || 0) > 0 || (Number(form.lopDays) || 0) > 0) {
-    deductions.push({
-      label: `Leave Deduction (${Number(form.lopDays) || 0} LOP day${Number(form.lopDays) === 1 ? '' : 's'})`,
-      amount: form.leaveDeduction || 0,
-      ytd: form.ytdLeaveDeduction || 0,
-    });
-  }
-  if (form.bondSecurity > 0) {
-    const pct = form.bondSecurityPercent ? ` (${form.bondSecurityPercent}%)` : '';
-    deductions.push({
-      label: `Bond Security Hold${pct}`,
-      amount: form.bondSecurity,
-      ytd: form.ytdBondSecurity,
-    });
-  }
-  for (const item of form.customDeductions || []) {
-    if (!item?.label && !(Number(item?.amount) > 0)) continue;
-    deductions.push({
-      label: item.label || 'Manual Deduction',
-      amount: item.amount,
-      ytd: item.ytd ?? item.amount,
-    });
-  }
+  const deductions = (form.customDeductions || []).map((item) => ({
+    label: item.label,
+    amount: item.amount,
+    ytd: item.ytd ?? item.amount,
+  }));
 
   const rows = Math.max(earnings.length, deductions.length, 1);
   doc.font('Helvetica').fontSize(10).fillColor('#333333');

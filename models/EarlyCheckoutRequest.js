@@ -2,6 +2,7 @@ import mongoose from 'mongoose';
 
 // An employee asks to leave before shift end. HR/Admin must approve or reject.
 // Approval unlocks checkout for the employee; they check out themselves (does not auto-checkout).
+// If the day auto-closes at 11:55 PM while still Pending, the request stays Pending for HR.
 const earlyCheckoutRequestSchema = new mongoose.Schema(
   {
     employee_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Employee', required: true, index: true },

@@ -11,7 +11,7 @@ import { approvedLeaveFractionOnDate, dutyHoursFromShift } from '../services/lea
 import { recalculateForDate, recalculateMonthlySummary } from '../services/monthlyHours.js';
 import { closeStaleOpenSessions, isAtOrAfterAutoCheckout } from '../services/autoCheckout.js';
 import { computeSurplusSplit } from '../services/surplusSplit.js';
-  import AuditLog from '../models/AuditLog.js';
+import AuditLog from '../models/AuditLog.js';
 
 async function attendanceDuty(employeeId, date, shift) {
   const fraction = await approvedLeaveFractionOnDate(employeeId, date);
@@ -417,7 +417,14 @@ export async function listEarlyCheckoutRequests(req, res) {
     } else if (req.query.employee_id) {
       filter.employee_id = req.query.employee_id;
     }
-    if (req.query.status) filter.status = req.query.status;
+    if (req.query.status) {
+      const statuses = String(req.query.status)
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean);
+      if (statuses.length === 1) filter.status = statuses[0];
+      else if (statuses.length > 1) filter.status = { $in: statuses };
+    }
     if (req.query.date) {
       filter.date = req.query.date;
     } else if (req.query.month && req.query.year) {
@@ -463,9 +470,11 @@ export async function decideEarlyCheckoutRequest(req, res) {
     request.decision_note = String(req.body.note || '').trim();
 
     // Approval only unlocks checkout — employee must check out themselves.
-    // Do not set attendance.check_out here.
+    // Do not set attendance.check_out here. After auto-checkout, approve/reject
+    // is still allowed for record-keeping (Pending requests stay visible overnight).
 
     await request.save();
+    const att = await Attendance.findById(request.attendance_id).select('check_out auto_checkout');
     await AuditLog.create({
       action: `early_checkout_${decision === 'Approved' ? 'approved' : 'rejected'}`,
       performed_by: req.user._id,
@@ -474,9 +483,16 @@ export async function decideEarlyCheckoutRequest(req, res) {
         date: request.date,
         requested_time: request.requested_time,
         note: request.decision_note,
+        already_checked_out: !!att?.check_out,
+        auto_checkout: !!att?.auto_checkout,
       },
     });
-    res.json(request);
+    const payload = request.toObject ? request.toObject() : request;
+    res.json({
+      ...payload,
+      already_checked_out: !!att?.check_out,
+      auto_checkout: !!att?.auto_checkout,
+    });
   } catch (e) {
     res.status(500).json({ message: e.message });
   }
@@ -594,7 +610,14 @@ export async function listCoverTimeRequests(req, res) {
     } else if (req.query.employee_id) {
       filter.employee_id = req.query.employee_id;
     }
-    if (req.query.status) filter.status = req.query.status;
+    if (req.query.status) {
+      const statuses = String(req.query.status)
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean);
+      if (statuses.length === 1) filter.status = statuses[0];
+      else if (statuses.length > 1) filter.status = { $in: statuses };
+    }
     if (req.query.date) {
       filter.date = req.query.date;
     } else if (req.query.month && req.query.year) {

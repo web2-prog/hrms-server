@@ -88,13 +88,13 @@ export async function computeYtdForSlip(employeeId, month, year, current) {
   const ytd_leave_deduction = round2(
     sum('leave_deduction_amount') + (Number(current.leave_deduction_amount) || 0)
   );
-  // Early checkout is no longer an auto deduction line; keep YTD field at 0 for compatibility.
-  const ytd_early_checkout_deduction = 0;
+  const ytd_early_checkout_deduction = round2(
+    sum('early_checkout_deduction_amount') + (Number(current.early_checkout_deduction_amount) || 0)
+  );
   const ytd_bond_security = round2(
     sum('bond_security_deduction') + (Number(current.bond_security_deduction) || 0)
   );
-  // TDS is no longer a slip deduction line; keep YTD field at 0 for compatibility.
-  const ytd_tds = 0;
+  const ytd_tds = round2(sum('tds') + (Number(current.tds) || 0));
   const ytd_custom_earnings = round2(custom_earnings.reduce((s, i) => s + (Number(i.ytd) || 0), 0));
   const ytd_custom_deductions = round2(
     custom_deductions.reduce((s, i) => s + (Number(i.ytd) || 0), 0)
@@ -130,7 +130,9 @@ export async function computeYtdForSlip(employeeId, month, year, current) {
   const ytd_total_deductions = round2(
     ytd_shortfall_deduction +
       ytd_leave_deduction +
+      ytd_early_checkout_deduction +
       ytd_bond_security +
+      ytd_tds +
       ytd_custom_deductions +
       priorCustomDedExtra
   );
@@ -237,14 +239,9 @@ export async function buildPayslipForm(slip) {
     grossEarnings: gross,
     ytdGrossEarnings: ytd.ytd_gross_earnings,
     totalDeductions,
-    ytdTotalDeductions: round2(
-      ytd.ytd_total_deductions - (Number(slip.leave_deduction_amount) || 0) + leaveDeduction
-    ),
-    netPay: net,
-    ytdNetPay: round2(
-      ytd.ytd_gross_earnings -
-        (ytd.ytd_total_deductions - (Number(slip.leave_deduction_amount) || 0) + leaveDeduction)
-    ),
+    ytdTotalDeductions: ytd.ytd_total_deductions,
+    netPay: Number(slip.net_pay) != null ? round2(slip.net_pay) : net,
+    ytdNetPay: ytd.ytd_net_pay,
     targetHours,
     countedHours,
     overtimeHours,

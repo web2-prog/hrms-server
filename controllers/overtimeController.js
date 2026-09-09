@@ -72,7 +72,14 @@ export async function list(req, res) {
 
     if (includeRequestsFiltered) {
       const filter = { ...empFilter };
-      if (req.query.status) filter.status = req.query.status;
+      if (req.query.status) {
+        const statuses = String(req.query.status)
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean);
+        if (statuses.length === 1) filter.status = statuses[0];
+        else if (statuses.length > 1) filter.status = { $in: statuses };
+      }
       if (req.query.ot_type && req.query.ot_type !== 'Attendance' && req.query.ot_type !== 'General') {
         filter.ot_type = req.query.ot_type;
       } else if (req.query.ot_type === 'General') {

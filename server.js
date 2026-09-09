@@ -3,6 +3,7 @@ import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
+import mongoose from 'mongoose';
 import { ensureDB } from './config/db.js';
 
 import authRoutes from './routes/auth.js';
@@ -26,12 +27,36 @@ dotenv.config();
 assertJwtSecret();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
+const isVercel = !!process.env.VERCEL;
+
 app.use(cors(corsOptions()));
 app.use(express.json({ limit: '15mb' }));
 app.use(express.urlencoded({ extended: true, limit: '15mb' }));
 app.use('/uploads', uploadRoutes);
 
-app.get('/health', (_req, res) => res.json({ ok: true, db: process.env.MONGODB_DB_NAME }));
+app.get('/health', (_req, res) =>
+  res.json({
+    ok: true,
+    db: process.env.MONGODB_DB_NAME,
+    dbReady: mongoose.connection.readyState === 1,
+  })
+);
+
+// Local: gate API on DB so routes don't crash while Atlas is blocked.
+if (!isVercel) {
+  app.use('/api', async (req, res, next) => {
+    if (req.path === '/jobs/auto-checkout') return next();
+    try {
+      await ensureDB();
+      next();
+    } catch {
+      res.status(503).json({
+        message:
+          'Database unavailable. Whitelist this machine IP in Atlas Network Access, then retry.',
+      });
+    }
+  });
+}
 
 app.get('/api/jobs/auto-checkout', async (req, res) => {
   const secret = process.env.CRON_SECRET;
@@ -71,19 +96,28 @@ app.use((err, _req, res, _next) => {
 });
 
 const PORT = process.env.PORT || 5001;
-const isVercel = !!process.env.VERCEL;
 
 if (!isVercel) {
-  // Local dev: connect once, then listen.
-  ensureDB()
-    .then(() => {
-      startAutoCheckoutScheduler();
-      app.listen(PORT, () => console.log(`HRMS-Spec API on :${PORT}`));
-    })
-    .catch((e) => {
-      console.error('DB connection failed', e);
-      process.exit(1);
-    });
+  // Listen immediately — do not exit when Atlas IP allowlist blocks connect.
+  app.listen(PORT, () => console.log(`HRMS-Spec API on :${PORT}`));
+
+  (async function connectWithRetry() {
+    let delayMs = 5000;
+    for (;;) {
+      try {
+        await ensureDB();
+        startAutoCheckoutScheduler();
+        console.log('MongoDB ready — API fully available');
+        return;
+      } catch (e) {
+        console.error(
+          `DB not ready (${String(e.message).split('\n')[0].slice(0, 80)}). Retrying in ${delayMs / 1000}s…`
+        );
+        await new Promise((r) => setTimeout(r, delayMs));
+        delayMs = Math.min(delayMs + 5000, 30000);
+      }
+    }
+  })();
 }
 
 export default async function handler(req, res) {

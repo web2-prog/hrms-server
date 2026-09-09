@@ -46,15 +46,6 @@ function resolveEmployeeEmail(employee) {
   return String(employee.email || '').trim();
 }
 
-/** Display/persist-safe money: drop legacy early-checkout / TDS auto-deductions from net. */
-function withoutRemovedSlipDeductions(slipLike) {
-  const o = { ...slipLike };
-  o.early_checkout_deduction_amount = 0;
-  o.tds = 0;
-  o.net_pay = computeSlipNetPay(o);
-  return o;
-}
-
 export async function list(req, res) {
   try {
     const { page, limit, skip, search } = parseListQuery(req.query);
@@ -77,13 +68,7 @@ export async function list(req, res) {
         .limit(limit),
       SalarySlip.countDocuments(filter),
     ]);
-    const rows = data.map((s) => {
-      const o = s.toObject();
-      if (Number(o.early_checkout_deduction_amount) > 0 || Number(o.tds) > 0) {
-        return withoutRemovedSlipDeductions(o);
-      }
-      return o;
-    });
+    const rows = data.map((s) => s.toObject());
     res.json(listResponse(rows, total, page, limit));
   } catch (e) {
     res.status(500).json({ message: e.message });
@@ -104,13 +89,7 @@ export async function getOne(req, res) {
         });
       }
     }
-    // Heal legacy drafts that still store early-checkout / TDS as money.
-    if (Number(slip.early_checkout_deduction_amount) > 0 || Number(slip.tds) > 0) {
-      slip.early_checkout_deduction_amount = 0;
-      slip.tds = 0;
-      slip.net_pay = computeSlipNetPay(slip);
-      if (slip.status === 'Draft') await slip.save();
-    }
+    // Keep early-checkout / TDS amounts for YTD and historical slips.
     const payslip = await buildPayslipForm(slip.toObject());
     res.json({ ...slip.toObject(), payslip });
   } catch (e) {
@@ -188,7 +167,6 @@ export async function generate(req, res) {
     } catch (err) {
       return res.status(400).json({ message: err.message });
     }
-
     const gate = await assertCanActOnStaffRecord(req.user, employee_id, 'generate salary');
     if (gate.error) return res.status(gate.status).json({ message: gate.error });
 
@@ -499,13 +477,24 @@ export async function sendSlip(req, res) {
     }
 
     const payslip = await buildPayslipForm(slip.toObject());
-    const filename = buildSlipPdfFilename(slip, payslip);
+    const filename =
+      String(req.body?.pdf_filename || '').trim() || buildSlipPdfFilename(slip, payslip);
     const monthLabel = MONTH_NAMES[slip.month - 1] || String(slip.month);
 
-    // Always build PDF on the server. Client base64 was hitting Vercel’s ~4.5MB body limit.
-    const pdfBuffer = await buildSalarySlipPdfBuffer(payslip);
-    if (!pdfBuffer?.length) {
-      return res.status(500).json({ message: 'Failed to generate salary slip PDF for email' });
+    // Prefer client-rendered PDF (same as View / Download PDF UI). Fallback to server PDF.
+    let pdfBuffer;
+    const rawBase64 = String(req.body?.pdf_base64 || '').trim();
+    if (rawBase64) {
+      const cleaned = rawBase64.replace(/^data:application\/pdf;base64,/i, '');
+      pdfBuffer = Buffer.from(cleaned, 'base64');
+      if (!pdfBuffer.length) {
+        return res.status(400).json({ message: 'Invalid PDF payload for salary slip email' });
+      }
+    } else {
+      pdfBuffer = await buildSalarySlipPdfBuffer(payslip);
+      if (!pdfBuffer?.length) {
+        return res.status(500).json({ message: 'Failed to generate salary slip PDF for email' });
+      }
     }
 
     const { messageId } = await sendSalarySlipEmail({

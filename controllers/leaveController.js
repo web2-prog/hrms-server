@@ -21,7 +21,14 @@ export async function list(req, res) {
   try {
     const { page, limit, skip, search } = parseListQuery(req.query);
     const filter = {};
-    if (req.query.status) filter.status = req.query.status;
+    if (req.query.status) {
+      const statuses = String(req.query.status)
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean);
+      if (statuses.length === 1) filter.status = statuses[0];
+      else if (statuses.length > 1) filter.status = { $in: statuses };
+    }
     if (req.query.day_type === 'Full Day') {
       filter.$or = [{ day_type: 'Full Day' }, { day_type: { $exists: false } }, { day_type: null }];
     } else if (req.query.day_type) {
@@ -79,6 +86,17 @@ export async function list(req, res) {
       filter.to_date = { $gte: req.query.from_date };
     }
 
+    // Decision window (approved_on) — used by HR "recent requests" modal (last N days).
+    if (req.query.decided_from || req.query.decided_to) {
+      filter.approved_on = {};
+      if (req.query.decided_from) {
+        filter.approved_on.$gte = new Date(`${req.query.decided_from}T00:00:00.000+05:30`);
+      }
+      if (req.query.decided_to) {
+        filter.approved_on.$lte = new Date(`${req.query.decided_to}T23:59:59.999+05:30`);
+      }
+    }
+
     const today = new Date();
     const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
     const when = String(req.query.when || '').toLowerCase();
@@ -106,7 +124,9 @@ export async function list(req, res) {
     const sort =
       when === 'upcoming' || when === 'future'
         ? { from_date: 1, applied_on: -1 }
-        : { applied_on: -1 };
+        : req.query.decided_from || req.query.decided_to
+          ? { approved_on: -1, applied_on: -1 }
+          : { applied_on: -1 };
 
     const [data, total] = await Promise.all([
       Leave.find(filter)

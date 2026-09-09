@@ -11,6 +11,13 @@ import { recalculateForDate } from './monthlyHours.js';
 export const AUTO_CHECKOUT_TIME = '23:55:00';
 const AUTO_CHECKOUT_SECONDS = timeToSeconds(AUTO_CHECKOUT_TIME);
 
+/** Note left on Pending early-checkout requests when the day auto-closes. */
+export const AUTO_CHECKOUT_ECR_NOTE =
+  'Day auto-checked out at 11:55 PM — still needs HR decision';
+
+/** Legacy cancel note written before we stopped cancelling Pending ECRs on auto-checkout. */
+export const AUTO_CHECKOUT_ECR_CANCEL_NOTE = 'Auto-checked out at 11:55 PM';
+
 let schedulerTimer = null;
 
 export function isAtOrAfterAutoCheckout(time = nowTime()) {
@@ -55,13 +62,13 @@ async function applyAutoCheckout(rec) {
   );
   await rec.save();
   await recalculateForDate(rec.employee_id, rec.date);
+  // Keep Pending early-checkout requests in the HR queue after auto-checkout.
+  // Cancelling them hid the request from admin/HR (UI only shows Pending + decisions).
   await EarlyCheckoutRequest.updateMany(
     { employee_id: rec.employee_id, date: rec.date, status: 'Pending' },
     {
       $set: {
-        status: 'Cancelled',
-        decision_note: 'Auto-checked out at 11:55 PM',
-        decided_at: new Date(),
+        decision_note: AUTO_CHECKOUT_ECR_NOTE,
       },
     }
   );
