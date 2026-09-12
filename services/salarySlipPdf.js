@@ -152,7 +152,7 @@ function drawSalarySlipPdf(doc, form) {
     .fillColor('#888888')
     .fontSize(8)
     .text(`Paid Days                 ${form.paidDays ?? 0}`, cardX + 10, cardY + 58, { width: 150 });
-  doc.text(`LOP                      ${form.leaveDays ?? 0}`, cardX + 10, cardY + 70, { width: 150 });
+  doc.text(`LOP                      ${form.lopDays ?? 0}`, cardX + 10, cardY + 70, { width: 150 });
 
   y = Math.max(dy, cardY + cardH + 12);
   doc.moveTo(left, y).lineTo(right, y).dash(3, { space: 2 }).strokeColor('#d0d0d0').stroke();
@@ -186,11 +186,23 @@ function drawSalarySlipPdf(doc, form) {
       ytd: item.ytd ?? item.amount,
     }))),
   ];
-  const deductions = (form.customDeductions || []).map((item) => ({
-    label: item.label,
-    amount: item.amount,
-    ytd: item.ytd ?? item.amount,
-  }));
+  const deductions = [];
+  const lopAmount = Number(form.leaveDeduction) || 0;
+  const lopDays = Number(form.lopDays) || 0;
+  if (lopAmount !== 0 || lopDays > 0) {
+    deductions.push({
+      label: form.leaveDeductionLabel || 'LOP Deduction',
+      amount: lopAmount,
+      ytd: form.ytdLeaveDeduction ?? lopAmount,
+    });
+  }
+  for (const item of form.customDeductions || []) {
+    deductions.push({
+      label: item.label,
+      amount: item.amount,
+      ytd: item.ytd ?? item.amount,
+    });
+  }
 
   const rows = Math.max(earnings.length, deductions.length, 1);
   doc.font('Helvetica').fontSize(10).fillColor('#333333');

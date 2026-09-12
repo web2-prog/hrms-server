@@ -223,6 +223,7 @@ export async function buildPayslipForm(slip) {
     shortfallDeduction: shortfall,
     ytdShortfallDeduction: ytd.ytd_shortfall_deduction,
     leaveDeduction,
+    leaveDeductionLabel: String(slip.leave_deduction_label || 'LOP Deduction').trim() || 'LOP Deduction',
     ytdLeaveDeduction: round2(
       ytd.ytd_leave_deduction - (Number(slip.leave_deduction_amount) || 0) + leaveDeduction
     ),

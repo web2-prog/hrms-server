@@ -14,6 +14,8 @@ const schema = new mongoose.Schema(
     shortfall_action: { type: String, enum: ['deduct', 'carry_forward'], default: undefined },
     deduction_amount: { type: Number, default: 0 }, // shortfall hours deduction
     leave_deduction_amount: { type: Number, default: 0 }, // unpaid / LOP leave
+    /** Display label for the LOP deduction line on the payslip (HR-editable). */
+    leave_deduction_label: { type: String, default: 'LOP Deduction' },
     early_checkout_minutes: { type: Number, default: 0 },
     early_checkout_deduction_amount: { type: Number, default: 0 },
     overtime_amount: { type: Number, default: 0 },

@@ -61,7 +61,7 @@ export function dailySalaryRate(baseSalary) {
   return base > 0 ? round2(lopDailyRate(base)) : 0;
 }
 
-const STRING_OVERRIDE_FIELDS = new Set(['pay_date', 'pf_no', 'uan']);
+const STRING_OVERRIDE_FIELDS = new Set(['pay_date', 'pf_no', 'uan', 'leave_deduction_label']);
 
 /** Money / display fields HR/Admin may override on a draft slip. */
 export const SALARY_OVERRIDE_FIELDS = [
@@ -70,6 +70,7 @@ export const SALARY_OVERRIDE_FIELDS = [
   'overtime_hours',
   'deduction_amount',
   'leave_deduction_amount',
+  'leave_deduction_label',
   // early_checkout_deduction_amount / tds / pf_no / uan removed from slip UI
   'bond_security_deduction',
   'bond_security_percent',
@@ -292,6 +293,7 @@ export async function calculateSalaryDraft(employeeId, month, year, options = {}
     carried_forward_hours: shortfallMgmtActive ? round2(summary?.carried_forward_hours || 0) : 0,
     deduction_amount: round2(deduction_amount),
     leave_deduction_amount: round2(leave_deduction_amount),
+    leave_deduction_label: options.leave_deduction_label || 'LOP Deduction',
     early_checkout_minutes: round2(early_checkout_minutes),
     early_checkout_deduction_amount: round2(early_checkout_deduction_amount),
     overtime_amount: round2(overtime_amount),
